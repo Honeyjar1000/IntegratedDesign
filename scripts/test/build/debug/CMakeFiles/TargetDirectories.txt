@@ -1,0 +1,3 @@
+D:/uni/ECE4179/project/idk/test/build/debug/CMakeFiles/test.dir
+D:/uni/ECE4179/project/idk/test/build/debug/CMakeFiles/edit_cache.dir
+D:/uni/ECE4179/project/idk/test/build/debug/CMakeFiles/rebuild_cache.dir
