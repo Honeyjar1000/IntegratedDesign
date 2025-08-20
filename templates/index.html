@@ -1,16 +1,147 @@
 <!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Pi Camera Stream</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 2rem; }
-      #stream { max-width: 100%; border: 1px solid #ccc; border-radius: 8px; }
-    </style>
-  </head>
-  <body>
-    <h1>Raspberry Pi NoIR Camera</h1>
-    <img id="stream" src="{{ url_for('video_feed') }}" alt="video stream" />
-    <p>If you don’t see video, check firewall/port and that the camera is detected.</p>
-  </body>
+<head>
+  <meta charset="utf-8"/>
+  <title>Pi Teleop — Video + Keyboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 16px; align-items: flex-start; }
+    #stream { max-width: 640px; border: 1px solid #ccc; border-radius: 8px; }
+    .panel { padding: 12px; border: 1px solid #ddd; border-radius: 8px; min-width: 280px; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .tag { display:inline-block; padding:2px 6px; border-radius:9999px; background:#eee; margin-left:6px;}
+    .btn { padding: 8px 10px; border: 1px solid #bbb; background:#f8f8f8; border-radius:8px; cursor:pointer; }
+    .btn:active { transform: translateY(1px); }
+    label { display:block; margin-top:8px; }
+    input[type="range"] { width: 100%; }
+  </style>
+</head>
+<body tabindex="0">
+  <h1>Pi Teleop</h1>
+  <div class="row">
+    <img id="stream" src="/video_feed" alt="video stream"/>
+    <div class="panel">
+      <h2>Keyboard</h2>
+      <p>Use <b>W/A/S/D</b> or <b>Arrow Keys</b> to drive. <b>Space</b> = stop.</p>
+      <p class="status">Left: <span id="lval">0</span>% <span class="tag" id="linv">normal</span><br>
+         Right: <span id="rval">0</span>% <span class="tag" id="rinv">normal</span></p>
+      <label>Speed (%):
+        <input id="speed" type="range" min="10" max="100" value="60">
+      </label>
+      <label><input type="checkbox" id="invertLeft"> Invert Left</label>
+      <label><input type="checkbox" id="invertRight"> Invert Right</label>
+      <div style="margin-top:10px; display:flex; gap:8px;">
+        <button class="btn" id="btnStop">Stop</button>
+        <button class="btn" id="btnNeutral">Neutral (1500µs)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Persist invert toggles
+    const invertLeft = document.getElementById('invertLeft');
+    const invertRight = document.getElementById('invertRight');
+    invertLeft.checked = localStorage.getItem('invertLeft') === 'true';
+    invertRight.checked = localStorage.getItem('invertRight') === 'true';
+    invertLeft.addEventListener('change', () => {
+      localStorage.setItem('invertLeft', invertLeft.checked);
+      document.getElementById('linv').textContent = invertLeft.checked ? 'inverted' : 'normal';
+    });
+    invertRight.addEventListener('change', () => {
+      localStorage.setItem('invertRight', invertRight.checked);
+      document.getElementById('rinv').textContent = invertRight.checked ? 'inverted' : 'normal';
+    });
+    document.getElementById('linv').textContent = invertLeft.checked ? 'inverted' : 'normal';
+    document.getElementById('rinv').textContent = invertRight.checked ? 'inverted' : 'normal';
+
+    const speedSlider = document.getElementById('speed');
+    const pressed = new Set(); // keys currently down
+    let cmd = {left: 0, right: 0};   // desired speeds -100..100
+    let lastSent = {left: null, right: null};
+    const lval = document.getElementById('lval');
+    const rval = document.getElementById('rval');
+
+    function computeCommand() {
+      const base = parseInt(speedSlider.value, 10);
+      let forward = (pressed.has('w') || pressed.has('ArrowUp'));
+      let back    = (pressed.has('s') || pressed.has('ArrowDown'));
+      let left    = (pressed.has('a') || pressed.has('ArrowLeft'));
+      let right   = (pressed.has('d') || pressed.has('ArrowRight'));
+
+      let L = 0, R = 0;
+      if (forward && !back)         { L = base;  R = base; }
+      else if (back && !forward)    { L = -base; R = -base; }
+
+      if (left && !right) {
+        // turn left: slow/oppose left, boost right
+        L = Math.min(L, 0) - Math.floor(base * 0.6);
+        R = Math.max(R, 0) + Math.floor(base * 0.6);
+      } else if (right && !left) {
+        L = Math.max(L, 0) + Math.floor(base * 0.6);
+        R = Math.min(R, 0) - Math.floor(base * 0.6);
+      }
+
+      // Invert per wheel if needed
+      if (invertLeft.checked)  L = -L;
+      if (invertRight.checked) R = -R;
+
+      cmd.left = Math.max(-100, Math.min(100, L));
+      cmd.right = Math.max(-100, Math.min(100, R));
+      lval.textContent = cmd.left;
+      rval.textContent = cmd.right;
+    }
+
+    async function sendDrive(left, right) {
+      try {
+        await fetch('/drive', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({left, right})
+        });
+      } catch (e) {
+        console.warn('drive failed', e);
+      }
+    }
+
+    // Throttle network: send at most 20 Hz and only on change
+    setInterval(() => {
+      computeCommand();
+      if (cmd.left !== lastSent.left || cmd.right !== lastSent.right) {
+        sendDrive(cmd.left, cmd.right);
+        lastSent = {left: cmd.left, right: cmd.right};
+      }
+    }, 50);
+
+    // Key handling
+    const watch = new Set(['w','a','s','d','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+    window.addEventListener('keydown', (e) => {
+      if (watch.has(e.key)) {
+        e.preventDefault();
+        pressed.add(e.key);
+      }
+      if (e.code === 'Space') {
+        e.preventDefault();
+        pressed.clear();
+        lastSent = {left: null, right: null};
+        sendDrive(0, 0);
+      }
+    }, {passive:false});
+
+    window.addEventListener('keyup', (e) => {
+      if (watch.has(e.key)) {
+        e.preventDefault();
+        pressed.delete(e.key);
+      }
+    }, {passive:false});
+
+    // Buttons
+    document.getElementById('btnStop').onclick = () => { pressed.clear(); lastSent={left:null,right:null}; sendDrive(0,0); };
+    document.getElementById('btnNeutral').onclick = async () => {
+      pressed.clear(); lastSent={left:null,right:null};
+      try {
+        await fetch('/stop', {method: 'POST'});
+      } catch (e) {}
+    };
+  </script>
+</body>
 </html>
