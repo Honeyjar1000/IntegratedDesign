@@ -1,14 +1,16 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Flask GUI</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-  <h1>Hello World!</h1>
-  <p>This is your Flask web GUI.</p>
-  <button onclick="alert('Button clicked!')">Click Me</button>
-</body>
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Pi Camera Stream</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      #stream { max-width: 100%; border: 1px solid #ccc; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Raspberry Pi NoIR Camera</h1>
+    <img id="stream" src="{{ url_for('video_feed') }}" alt="video stream" />
+    <p>If you don’t see video, check firewall/port and that the camera is detected.</p>
+  </body>
 </html>
-

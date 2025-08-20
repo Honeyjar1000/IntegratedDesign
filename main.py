@@ -1,4 +1,4 @@
-# scp -r D:\uni\ECE4179\project\IntegratedDesign\* tom@raspberrypi:~/Documents/
+# scp -r D:/uni/ECE4179/project/IntegratedDesign/* tom@raspberrypi:~/Documents/
 # scp -r /Users/ahila/Desktop/IntegratedDesign/* ahila@raspberrypi.local:/home/tom/Documents/ - AHILA
 
 """
