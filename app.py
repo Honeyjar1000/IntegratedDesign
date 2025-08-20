@@ -1,5 +1,5 @@
 from flask import Flask, render_template, Response
-from picamera2 import Picamera2, Transform
+from picamera2 import Picamera2
 import cv2
 import time
 
@@ -8,14 +8,12 @@ app = Flask(__name__)
 # --- Camera init ---
 picam2 = Picamera2()
 # modest resolution keeps CPU low on Zero 2 W; tweak as needed
-cfg = picam2.create_video_configuration(
-    main={"size": (640, 480), "format": "RGB888"},
-    controls={"FrameRate": 15},
-    transform=Transform(rotation=270)   # optional: rotate if your image is sideways
+video_config = picam2.create_video_configuration(
+    main={"size": (640, 480), "format": "XRGB8888"},
+    controls={"FrameRate": 24}
 )
-picam2.configure(cfg)
+picam2.configure(video_config)
 picam2.start()
-picam2.set_controls({"AwbEnable": True, "AwbMode": "fluorescent"}) 
 time.sleep(0.2)  # small warm-up
 
 def mjpeg_generator():
