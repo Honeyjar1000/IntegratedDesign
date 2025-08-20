@@ -15,6 +15,7 @@ cfg = picam2.create_video_configuration(
 )
 picam2.configure(cfg)
 picam2.start()
+picam2.set_controls({"AwbEnable": True, "AwbMode": "fluorescent"}) 
 time.sleep(0.2)  # small warm-up
 
 def mjpeg_generator():
