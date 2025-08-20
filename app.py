@@ -1,5 +1,5 @@
 from flask import Flask, render_template, Response
-from picamera2 import Picamera2
+from picamera2 import Picamera2, Transform
 import cv2
 import time
 
@@ -8,11 +8,12 @@ app = Flask(__name__)
 # --- Camera init ---
 picam2 = Picamera2()
 # modest resolution keeps CPU low on Zero 2 W; tweak as needed
-video_config = picam2.create_video_configuration(
-    main={"size": (640, 480), "format": "XRGB8888"},
-    controls={"FrameRate": 24}
+cfg = picam2.create_video_configuration(
+    main={"size": (640, 480), "format": "RGB888"},
+    controls={"FrameRate": 15},
+    transform=Transform(rotation=270)   # optional: rotate if your image is sideways
 )
-picam2.configure(video_config)
+picam2.configure(cfg)
 picam2.start()
 time.sleep(0.2)  # small warm-up
 
@@ -43,5 +44,4 @@ def video_feed():
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
 if __name__ == "__main__":
-    # change port=80 to 5000 if you don’t want sudo
-    app.run(host="0.0.0.0", port=80, debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False, threaded=True)
