@@ -1,11 +1,12 @@
-from flask import Flask, render_template, Response, request, jsonify
+#!/usr/bin/env python3
+from flask import Flask, render_template_string, Response, request, jsonify
 from picamera2 import Picamera2
-import pigpio
-import cv2, time
+import pigpio, cv2, time, os, atexit
+from threading import Lock
 
 app = Flask(__name__)
 
-# ---------------- Camera (unchanged) ----------------
+# ==================== Camera ====================
 picam2 = Picamera2()
 video_config = picam2.create_video_configuration(
     main={"size": (640, 480), "format": "XRGB8888"},
@@ -15,137 +16,269 @@ picam2.configure(video_config)
 picam2.start()
 time.sleep(0.2)
 
+_last_jpeg = None
+_frame_lock = Lock()
+
 def mjpeg_generator():
+    global _last_jpeg
     while True:
-        frame = picam2.capture_array()                      # XRGB8888
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR) # drop X
+        frame = picam2.capture_array()
+        frame = cv2.flip(frame, -1)  # 180° rotate if camera inverted
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
             continue
-        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n")
-
-@app.route("/")
-def index():
-    return render_template("index.html")
+        with _frame_lock:
+            _last_jpeg = jpg.tobytes()
+        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + _last_jpeg + b"\r\n")
 
 @app.route("/video_feed")
 def video_feed():
     return Response(mjpeg_generator(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
-# ---------------- Servo control w/ anti-jitter ----------------
-# Physical pins: 10 -> BCM15, 12 -> BCM18
-SERVOS = {
-    1: {"gpio": 15, "stop": 1500},   # per-servo neutral; trim via /servo/trim
-    2: {"gpio": 18, "stop": 1500},
-}
+@app.route("/photo", methods=["GET", "POST"])
+def take_photo():
+    os.makedirs("imgs", exist_ok=True)
+    name = request.args.get("name")
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        if isinstance(body, dict):
+            name = body.get("name", name)
 
-MIN_US, MAX_US = 500, 2500
-DEADBAND_PCT = 12            # ignore |speed| below this (%), avoids chatter
-MIN_START_US  = 40           # minimum offset to "break away" from neutral
-STEP_US       = 30           # max change per command (slew/ramp)
-FWD_SCALE     = 5.0          # µs per % forward
-REV_SCALE     = 5.5          # µs per % reverse (often needs a little more)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    base = ts
+    if name:
+        safe = "".join(c for c in name if c.isalnum() or c in ("-", "_"))
+        if safe:
+            base += f"_{safe}"
+    path = os.path.join("imgs", base + ".jpg")
+
+    with _frame_lock:
+        jpeg_bytes = _last_jpeg
+
+    if jpeg_bytes is None:
+        frame = picam2.capture_array()
+        frame = cv2.flip(frame, -1)
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            return jsonify(ok=False, error="encode failed"), 500
+        jpeg_bytes = jpg.tobytes()
+
+    with open(path, "wb") as f:
+        f.write(jpeg_bytes)
+
+    return jsonify(ok=True, saved=path, bytes=len(jpeg_bytes))
+
+# ==================== Motors: L298N dual channel ====================
+# LEFT motor (Channel A: OUT1/OUT2)
+ENA_L, IN1_L, IN2_L = 12, 23, 24     # BCM12(phys32), BCM23(16), BCM24(18)
+# RIGHT motor (Channel B: OUT3/OUT4)
+ENA_R, IN3_R, IN4_R = 13, 19, 26     # BCM13(33), BCM19(35), BCM26(37)
+
+PWM_FREQ_HZ = 25_000       # ultrasonic (quiet)
+DUTY_MIN = 0.80            # 80% is your quiet threshold (per your tests)
+DUTY_MAX = 1.00
+BRAKE_TIME = 0.06          # brief active brake on stop
 
 pi = pigpio.pi()
 if not pi.connected:
-    raise RuntimeError("pigpio not running. Try: sudo systemctl start pigpiod")
+    raise RuntimeError("pigpio daemon not running. Try: sudo systemctl start pigpiod")
 
-for ch, cfg in SERVOS.items():
-    pi.set_mode(cfg["gpio"], pigpio.OUTPUT)
-    pi.set_servo_pulsewidth(cfg["gpio"], cfg["stop"])
+for p in (ENA_L, IN1_L, IN2_L, ENA_R, IN3_R, IN4_R):
+    pi.set_mode(p, pigpio.OUTPUT)
+    pi.write(p, 0)
 
-_last_us = {ch: SERVOS[ch]["stop"] for ch in SERVOS}   # for slew limiting
+_motor_lock = Lock()
+# State
+_cur = {
+    "L": {"dir": 0, "duty": 0.0},
+    "R": {"dir": 0, "duty": 0.0},
+}
 
-def clamp_us(us: int) -> int:
-    return max(MIN_US, min(MAX_US, int(us)))
+def _duty_to_hw(d):
+    d = max(DUTY_MIN, min(DUTY_MAX, float(d)))
+    return int(d * 1_000_000)  # hardware_PWM duty units
 
-def speed_to_us(ch: int, speed_pct: float) -> int:
-    """Continuous rotation mapping with deadband + reverse bias."""
-    s = max(-100.0, min(100.0, float(speed_pct)))
-    stop = SERVOS[ch]["stop"]
-
-    # Deadband around stop to avoid jitter
-    if abs(s) < DEADBAND_PCT:
-        return stop
-
-    if s > 0:
-        delta = max(MIN_START_US, int(s * FWD_SCALE))
-        return clamp_us(stop + delta)
+def _apply_one(side, direction, duty):
+    """Immediately apply direction & duty to one motor and HOLD it."""
+    if side == "L":
+        ena, in1, in2 = ENA_L, IN1_L, IN2_L
     else:
-        delta = max(MIN_START_US, int((-s) * REV_SCALE))
-        return clamp_us(stop - delta)
+        ena, in1, in2 = ENA_R, IN3_R, IN4_R
 
-def apply_with_slew(ch: int, target_us: int):
-    """Limit step size to reduce twitching."""
-    prev = _last_us.get(ch, SERVOS[ch]["stop"])
-    if abs(target_us - prev) > STEP_US:
-        target_us = prev + STEP_US if target_us > prev else prev - STEP_US
-    _last_us[ch] = target_us
-    pi.set_servo_pulsewidth(SERVOS[ch]["gpio"], target_us)
-    return target_us
+    if direction > 0:   # forward
+        pi.write(in1, 1); pi.write(in2, 0)
+    elif direction < 0: # reverse
+        pi.write(in1, 0); pi.write(in2, 1)
+    else:               # coast
+        pi.write(in1, 0); pi.write(in2, 0)
 
+    pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(duty) if duty > 0 else 0)
+
+def _set_speed_one(side, speed):
+    """speed in [-1,1]; maps to duty [DUTY_MIN..DUTY_MAX]; 0 = stop."""
+    s = max(-1.0, min(1.0, float(speed)))
+    if abs(s) < 1e-3:
+        # stop/coast
+        if side == "L":
+            pi.hardware_PWM(ENA_L, 0, 0); pi.write(IN1_L, 0); pi.write(IN2_L, 0)
+        else:
+            pi.hardware_PWM(ENA_R, 0, 0); pi.write(IN3_R, 0); pi.write(IN4_R, 0)
+        _cur[side]["dir"], _cur[side]["duty"] = 0, 0.0
+        return _cur[side]
+
+    direction = 1 if s > 0 else -1
+    duty = DUTY_MIN + (DUTY_MAX - DUTY_MIN) * abs(s)
+    _apply_one(side, direction, duty)
+    _cur[side]["dir"], _cur[side]["duty"] = direction, duty
+    return _cur[side]
+
+def stop_all(brake=True):
+    with _motor_lock:
+        if brake:
+            # active brake both briefly
+            pi.write(IN1_L,1); pi.write(IN2_L,1); pi.hardware_PWM(ENA_L,0,0)
+            pi.write(IN3_R,1); pi.write(IN4_R,1); pi.hardware_PWM(ENA_R,0,0)
+            time.sleep(BRAKE_TIME)
+        # coast + PWM off
+        for ena, inA, inB in ((ENA_L, IN1_L, IN2_L), (ENA_R, IN3_R, IN4_R)):
+            pi.write(inA, 0); pi.write(inB, 0)
+            pi.hardware_PWM(ena, 0, 0)
+        _cur["L"] = {"dir":0, "duty":0.0}
+        _cur["R"] = {"dir":0, "duty":0.0}
+
+# ------------- HTTP endpoints -------------
 @app.post("/drive")
 def drive():
     """
-    Set both wheels: {"left": -100..100, "right": -100..100} (percent)
+    Tank drive:
+      JSON: {"left": -1..1, "right": -1..1}
+      Holds until /stop or next /drive call.
     """
     data = request.get_json(force=True)
     left = float(data.get("left", 0))
     right = float(data.get("right", 0))
-    l_us = speed_to_us(1, left)
-    r_us = speed_to_us(2, right)
-    l_us = apply_with_slew(1, l_us)
-    r_us = apply_with_slew(2, r_us)
-    return jsonify(ok=True, left=left, right=right, l_us=l_us, r_us=r_us)
-
-@app.post("/servo")
-def servo_single():
-    """
-    Direct control: {"ch":1, "speed":-30} OR {"ch":2, "us":1600}
-    """
-    data = request.get_json(force=True)
-    ch = int(data.get("ch", 1))
-    if ch not in SERVOS:
-        return jsonify(ok=False, error="ch must be 1 or 2"), 400
-
-    if "us" in data:
-        us = clamp_us(int(data["us"]))
-    elif "speed" in data:
-        us = speed_to_us(ch, float(data["speed"]))
-    else:
-        return jsonify(ok=False, error="provide 'speed' or 'us'"), 400
-
-    us = apply_with_slew(ch, us)
-    return jsonify(ok=True, ch=ch, us=us)
+    with _motor_lock:
+        stL = _set_speed_one("L", left)
+        stR = _set_speed_one("R", right)
+    return jsonify(ok=True, left=stL, right=stR, pwm_hz=PWM_FREQ_HZ)
 
 @app.post("/stop")
 def stop():
-    for ch in SERVOS:
-        _last_us[ch] = SERVOS[ch]["stop"]
-        pi.set_servo_pulsewidth(SERVOS[ch]["gpio"], SERVOS[ch]["stop"])
-    return jsonify(ok=True)
+    stop_all(brake=True)
+    return jsonify(ok=True, left=_cur["L"], right=_cur["R"])
 
-@app.post("/servo/trim")
-def servo_trim():
-    """
-    Adjust neutral on the fly: {"ch":1, "delta_us": 2}  (use +/- until wheel truly stops)
-    """
-    data = request.get_json(force=True)
-    ch = int(data.get("ch", 1))
-    delta = int(data.get("delta_us", 0))
-    if ch not in SERVOS:
-        return jsonify(ok=False, error="ch must be 1 or 2"), 400
-    SERVOS[ch]["stop"] = clamp_us(SERVOS[ch]["stop"] + delta)
-    _last_us[ch] = SERVOS[ch]["stop"]
-    pi.set_servo_pulsewidth(SERVOS[ch]["gpio"], SERVOS[ch]["stop"])
-    return jsonify(ok=True, ch=ch, new_stop=SERVOS[ch]["stop"])
+@app.get("/status")
+def status():
+    return jsonify(ok=True, left=_cur["L"], right=_cur["R"], pwm_hz=PWM_FREQ_HZ,
+                   duty_min=DUTY_MIN, duty_max=DUTY_MAX)
 
-@app.get("/servo/status")
-def servo_status():
-    return jsonify(ok=True, config={ch: {"gpio": cfg["gpio"], "stop": cfg["stop"]}
-                                    for ch, cfg in SERVOS.items()},
-                   last_us=_last_us)
+# ==================== Simple index with arrow keys ====================
+INDEX_HTML = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Pi Cam + Dual Motor</title>
+<style>
+  body{font-family:system-ui;margin:0;background:#111;color:#eee}
+  #v{max-width:640px;width:100%;display:block;margin:16px auto;border:1px solid #333;border-radius:8px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 16px;text-align:center}
+  .kbd{display:inline-block;border:1px solid #555;border-radius:6px;background:#222;padding:3px 8px;margin:0 2px}
+  button{background:#2b2b2b;color:#eee;border:1px solid #444;border-radius:10px;padding:10px 14px;margin:6px;cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img id="v" src="/video_feed" alt="Live video">
+    <p>Click page to focus. Hold:
+      <span class="kbd">↑</span> forward,
+      <span class="kbd">↓</span> reverse,
+      <span class="kbd">←</span> pivot left,
+      <span class="kbd">→</span> pivot right. Release = stop.</p>
+    <div>
+      <button id="btnFwd">Forward (↑)</button>
+      <button id="btnRev">Reverse (↓)</button>
+      <button id="btnL">Pivot Left (←)</button>
+      <button id="btnR">Pivot Right (→)</button>
+      <button id="btnStop">Stop</button>
+    </div>
+    <pre id="status">L: dir 0 duty 0.00 | R: dir 0 duty 0.00</pre>
+  </div>
+<script>
+async function postJSON(url, body){
+  const res = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) });
+  return res.json();
+}
+function updateStatus(j){
+  const el = document.getElementById("status");
+  if(!el) return;
+  if(j && j.ok){
+    const L = j.left || {dir:0,duty:0}, R = j.right || {dir:0,duty:0};
+    const fmt = x => (typeof x==="number" ? x.toFixed(2) : x);
+    el.textContent = `L: dir ${L.dir} duty ${fmt(L.duty)} | R: dir ${R.dir} duty ${fmt(R.duty)}`;
+  } else if(j && j.error){
+    el.textContent = `error: ${j.error}`;
+  }
+}
+async function drive(left, right){ updateStatus(await postJSON("/drive", {left, right})); }
+async function stop(){ updateStatus(await postJSON("/stop", {})); }
+
+document.getElementById("btnFwd").addEventListener("click", ()=>drive(1, 1));
+document.getElementById("btnRev").addEventListener("click", ()=>drive(-1, -1));
+document.getElementById("btnL").addEventListener("click", ()=>drive(-1, 1));
+document.getElementById("btnR").addEventListener("click", ()=>drive(1, -1));
+document.getElementById("btnStop").addEventListener("click", stop);
+
+// Keyboard: send once on keydown, stop on keyup
+const pressed = new Set();
+window.addEventListener("keydown", (e)=>{
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
+  if(pressed.has(e.code)) return;  // ignore auto-repeat
+  pressed.add(e.code);
+  if(e.code==="ArrowUp") drive(1, 1);
+  if(e.code==="ArrowDown") drive(-1, -1);
+  if(e.code==="ArrowLeft") drive(-1, 1);
+  if(e.code==="ArrowRight") drive(1, -1);
+});
+window.addEventListener("keyup", (e)=>{
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
+  pressed.delete(e.code);
+  // if no arrow keys are held, stop
+  const anyHeld = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].some(k => pressed.has(k));
+  if(!anyHeld) stop();
+});
+
+// Optional: periodic status
+setInterval(async ()=>{
+  try{
+    const r = await fetch("/status"); updateStatus(await r.json());
+  }catch{}
+}, 3000);
+</script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(INDEX_HTML)
+
+# ==================== Exit-time cleanup ====================
+def _on_exit():
+    try:
+        stop_all(brake=False)
+    except Exception:
+        pass
+    try:
+        pi.stop()
+    except Exception:
+        pass
+
+atexit.register(_on_exit)
 
 if __name__ == "__main__":
+    # Do NOT stop on startup; we want it to keep running after /drive until /stop
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False, threaded=True)

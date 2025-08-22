@@ -1,147 +1,143 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>Pi Teleop — Video + Keyboard</title>
+  <meta charset="utf-8" />
+  <title>Pi Cam + Motor Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, sans-serif; margin: 16px; }
-    .row { display: flex; gap: 16px; align-items: flex-start; }
-    #stream { max-width: 640px; border: 1px solid #ccc; border-radius: 8px; }
-    .panel { padding: 12px; border: 1px solid #ddd; border-radius: 8px; min-width: 280px; }
-    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .tag { display:inline-block; padding:2px 6px; border-radius:9999px; background:#eee; margin-left:6px;}
-    .btn { padding: 8px 10px; border: 1px solid #bbb; background:#f8f8f8; border-radius:8px; cursor:pointer; }
-    .btn:active { transform: translateY(1px); }
-    label { display:block; margin-top:8px; }
-    input[type="range"] { width: 100%; }
+    body { font-family: system-ui, sans-serif; margin: 0; background:#111; color:#eee; }
+    header { padding: 12px 16px; background:#181818; position: sticky; top: 0; }
+    main { padding: 16px; display:grid; gap:16px; }
+    .row { display:flex; gap:16px; flex-wrap: wrap; align-items: flex-start; }
+    .panel { background:#1c1c1c; border:1px solid #2a2a2a; border-radius:12px; padding:16px; }
+    #video { max-width: 640px; width: 100%; border-radius: 8px; border:1px solid #333; }
+    .kbd { display:inline-block; padding:4px 8px; border:1px solid #555; border-radius:6px; background:#222; }
+    button { background:#2b2b2b; color:#eee; border:1px solid #444; border-radius:10px; padding:10px 14px; cursor:pointer; }
+    button:active { transform: translateY(1px); }
+    .status { font-variant-numeric: tabular-nums; }
   </style>
 </head>
-<body tabindex="0">
-  <h1>Pi Teleop</h1>
-  <div class="row">
-    <img id="stream" src="/video_feed" alt="video stream"/>
-    <div class="panel">
-      <h2>Keyboard</h2>
-      <p>Use <b>W/A/S/D</b> or <b>Arrow Keys</b> to drive. <b>Space</b> = stop.</p>
-      <p class="status">Left: <span id="lval">0</span>% <span class="tag" id="linv">normal</span><br>
-         Right: <span id="rval">0</span>% <span class="tag" id="rinv">normal</span></p>
-      <label>Speed (%):
-        <input id="speed" type="range" min="10" max="100" value="60">
-      </label>
-      <label><input type="checkbox" id="invertLeft"> Invert Left</label>
-      <label><input type="checkbox" id="invertRight"> Invert Right</label>
-      <div style="margin-top:10px; display:flex; gap:8px;">
-        <button class="btn" id="btnStop">Stop</button>
-        <button class="btn" id="btnNeutral">Neutral (1500µs)</button>
+<body>
+  <header>
+    <strong>Pi Camera + Motor</strong>
+  </header>
+
+  <main>
+    <div class="row">
+      <div class="panel">
+        <img id="video" src="/video_feed" alt="Live video" />
+        <div style="margin-top:8px; font-size:14px; color:#bbb">
+          Tip: Click anywhere on the page to give it focus, then use
+          <span class="kbd">↑</span> / <span class="kbd">↓</span> to drive.
+        </div>
+      </div>
+
+      <div class="panel" style="min-width:260px; flex:1;">
+        <h3 style="margin-top:0">Controls</h3>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="btnFwd">Forward (↑)</button>
+          <button id="btnRev">Reverse (↓)</button>
+          <button id="btnStop">Stop</button>
+        </div>
+
+        <h4>Status</h4>
+        <div id="status" class="status">dir: 0, duty: 0.00</div>
       </div>
     </div>
-  </div>
+  </main>
 
   <script>
-    // Persist invert toggles
-    const invertLeft = document.getElementById('invertLeft');
-    const invertRight = document.getElementById('invertRight');
-    invertLeft.checked = localStorage.getItem('invertLeft') === 'true';
-    invertRight.checked = localStorage.getItem('invertRight') === 'true';
-    invertLeft.addEventListener('change', () => {
-      localStorage.setItem('invertLeft', invertLeft.checked);
-      document.getElementById('linv').textContent = invertLeft.checked ? 'inverted' : 'normal';
-    });
-    invertRight.addEventListener('change', () => {
-      localStorage.setItem('invertRight', invertRight.checked);
-      document.getElementById('rinv').textContent = invertRight.checked ? 'inverted' : 'normal';
-    });
-    document.getElementById('linv').textContent = invertLeft.checked ? 'inverted' : 'normal';
-    document.getElementById('rinv').textContent = invertRight.checked ? 'inverted' : 'normal';
-
-    const speedSlider = document.getElementById('speed');
-    const pressed = new Set(); // keys currently down
-    let cmd = {left: 0, right: 0};   // desired speeds -100..100
-    let lastSent = {left: null, right: null};
-    const lval = document.getElementById('lval');
-    const rval = document.getElementById('rval');
-
-    function computeCommand() {
-      const base = parseInt(speedSlider.value, 10);
-      let forward = (pressed.has('w') || pressed.has('ArrowUp'));
-      let back    = (pressed.has('s') || pressed.has('ArrowDown'));
-      let left    = (pressed.has('a') || pressed.has('ArrowLeft'));
-      let right   = (pressed.has('d') || pressed.has('ArrowRight'));
-
-      let L = 0, R = 0;
-      if (forward && !back)         { L = base;  R = base; }
-      else if (back && !forward)    { L = -base; R = -base; }
-
-      if (left && !right) {
-        // turn left: slow/oppose left, boost right
-        L = Math.min(L, 0) - Math.floor(base * 0.6);
-        R = Math.max(R, 0) + Math.floor(base * 0.6);
-      } else if (right && !left) {
-        L = Math.max(L, 0) + Math.floor(base * 0.6);
-        R = Math.min(R, 0) - Math.floor(base * 0.6);
-      }
-
-      // Invert per wheel if needed
-      if (invertLeft.checked)  L = -L;
-      if (invertRight.checked) R = -R;
-
-      cmd.left = Math.max(-100, Math.min(100, L));
-      cmd.right = Math.max(-100, Math.min(100, R));
-      lval.textContent = cmd.left;
-      rval.textContent = cmd.right;
+    // --- Helpers to POST JSON to Flask endpoints ---
+    async function postJSON(url, body) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      return res.json();
     }
 
-    async function sendDrive(left, right) {
+    async function cmdForward() {
+      lastCmd = "fwd";
       try {
-        await fetch('/drive', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({left, right})
-        });
-      } catch (e) {
-        console.warn('drive failed', e);
+        const j = await postJSON("/motor", { dir: "fwd" });
+        updateStatus(j);
+      } catch (e) { console.error(e); }
+    }
+
+    async function cmdReverse() {
+      lastCmd = "rev";
+      try {
+        const j = await postJSON("/motor", { dir: "rev" });
+        updateStatus(j);
+      } catch (e) { console.error(e); }
+    }
+
+    async function cmdStop() {
+      lastCmd = "stop";
+      try {
+        const j = await postJSON("/motor/stop", {});
+        updateStatus(j);
+      } catch (e) { console.error(e); }
+    }
+
+    function updateStatus(j) {
+      const el = document.getElementById("status");
+      if (!el) return;
+      if (j && j.ok) {
+        const dir = ("dir" in j) ? j.dir : 0;
+        const duty = ("duty" in j) ? j.duty : 0;
+        el.textContent = `dir: ${dir}, duty: ${duty.toFixed ? duty.toFixed(2) : duty}`;
+      } else if (j && j.error) {
+        el.textContent = `error: ${j.error}`;
       }
     }
 
-    // Throttle network: send at most 20 Hz and only on change
-    setInterval(() => {
-      computeCommand();
-      if (cmd.left !== lastSent.left || cmd.right !== lastSent.right) {
-        sendDrive(cmd.left, cmd.right);
-        lastSent = {left: cmd.left, right: cmd.right};
-      }
-    }, 50);
+    // --- UI buttons ---
+    document.getElementById("btnFwd").addEventListener("click", cmdForward);
+    document.getElementById("btnRev").addEventListener("click", cmdReverse);
+    document.getElementById("btnStop").addEventListener("click", cmdStop);
 
-    // Key handling
-    const watch = new Set(['w','a','s','d','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
-    window.addEventListener('keydown', (e) => {
-      if (watch.has(e.key)) {
-        e.preventDefault();
-        pressed.add(e.key);
-      }
-      if (e.code === 'Space') {
-        e.preventDefault();
-        pressed.clear();
-        lastSent = {left: null, right: null};
-        sendDrive(0, 0);
-      }
-    }, {passive:false});
+    // --- Keyboard handling ---
+    // We only send a command when key goes down (first time), then stop on keyup.
+    // Ignore OS key-repeat by tracking a pressed set.
+    const pressed = new Set();
+    let lastCmd = "stop";
 
-    window.addEventListener('keyup', (e) => {
-      if (watch.has(e.key)) {
-        e.preventDefault();
-        pressed.delete(e.key);
-      }
-    }, {passive:false});
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "ArrowUp" || e.code === "ArrowDown") e.preventDefault();
+      if (pressed.has(e.code)) return; // ignore repeats
+      pressed.add(e.code);
 
-    // Buttons
-    document.getElementById('btnStop').onclick = () => { pressed.clear(); lastSent={left:null,right:null}; sendDrive(0,0); };
-    document.getElementById('btnNeutral').onclick = async () => {
-      pressed.clear(); lastSent={left:null,right:null};
+      if (e.code === "ArrowUp") {
+        cmdForward();
+      } else if (e.code === "ArrowDown") {
+        cmdReverse();
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "ArrowUp" || e.code === "ArrowDown") {
+        e.preventDefault();
+        pressed.delete(e.code);
+        // If neither arrow is held, stop
+        if (!pressed.has("ArrowUp") && !pressed.has("ArrowDown")) {
+          cmdStop();
+        }
+      } else {
+        pressed.delete(e.code);
+      }
+    });
+
+    // Optional: poll status every few seconds to reflect any server-side changes
+    async function pollStatus() {
       try {
-        await fetch('/stop', {method: 'POST'});
-      } catch (e) {}
-    };
+        const res = await fetch("/motor/status");
+        const j = await res.json();
+        updateStatus(j);
+      } catch {}
+    }
+    setInterval(pollStatus, 2500);
   </script>
 </body>
 </html>
