@@ -73,14 +73,16 @@ def take_photo():
 
 # ==================== Motors: L298N dual channel ====================
 # LEFT motor (Channel A: OUT1/OUT2)
-ENA_L, IN1_L, IN2_L = 12, 23, 24     # BCM12(phys32), BCM23(16), BCM24(18)
+ENA_L, IN1_L, IN2_L = 12, 23, 25     # BCM12(phys32), BCM23(16), BCM24(18)
 # RIGHT motor (Channel B: OUT3/OUT4)
 ENA_R, IN3_R, IN4_R = 13, 19, 26     # BCM13(33), BCM19(35), BCM26(37)
 
-PWM_FREQ_HZ = 25_000       # ultrasonic (quiet)
-DUTY_MIN = 0.80            # 80% is your quiet threshold (per your tests)
+PWM_FREQ_HZ = 15000       # ultrasonic (quiet)
+DUTY_MIN = 0.10            # 80% is your quiet threshold (per your tests)
 DUTY_MAX = 1.00
 BRAKE_TIME = 0.06          # brief active brake on stop
+
+POLARITY = {"L": -1, "R": +1}
 
 pi = pigpio.pi()
 if not pi.connected:
@@ -120,8 +122,10 @@ def _apply_one(side, direction, duty):
 def _set_speed_one(side, speed):
     """speed in [-1,1]; maps to duty [DUTY_MIN..DUTY_MAX]; 0 = stop."""
     s = max(-1.0, min(1.0, float(speed)))
+    # apply per-motor polarity so 'forward' means both wheels push the robot forward
+    s *= POLARITY[side]
+
     if abs(s) < 1e-3:
-        # stop/coast
         if side == "L":
             pi.hardware_PWM(ENA_L, 0, 0); pi.write(IN1_L, 0); pi.write(IN2_L, 0)
         else:
@@ -169,6 +173,25 @@ def drive():
 def stop():
     stop_all(brake=True)
     return jsonify(ok=True, left=_cur["L"], right=_cur["R"])
+
+@app.get("/diag")
+def diag():
+    side = request.args.get("side","L").upper()
+    if side not in ("L","R"): return jsonify(ok=False,error="side must be L or R"),400
+    if side=="L": ena,in1,in2 = ENA_L,IN1_L,IN2_L
+    else:         ena,in1,in2 = ENA_R,IN3_R,IN4_R
+
+    def pulse(tag, a, b):
+        pi.hardware_PWM(ena,0,0); pi.write(in1,0); pi.write(in2,0); time.sleep(0.05)
+        pi.write(in1,a); pi.write(in2,b)
+        pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(0.8)); time.sleep(1.0)
+        pi.hardware_PWM(ena,0,0)
+        return {"tag":tag,"in1_set":a,"in2_set":b,"in1_read":int(pi.read(in1)),"in2_read":int(pi.read(in2))}
+    fwd = pulse("forward",1,0)
+    rev = pulse("reverse",0,1)
+    pi.write(in1,0); pi.write(in2,0)
+    return jsonify(ok=True, side=side, forward=fwd, reverse=rev)
+
 
 @app.get("/status")
 def status():
