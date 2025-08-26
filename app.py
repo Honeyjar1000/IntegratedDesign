@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from flask import Flask, render_template_string, Response, request, jsonify
+from flask import Flask, render_template, Response, request, jsonify
 from picamera2 import Picamera2
 import pigpio, cv2, time, os, atexit
 from threading import Lock
@@ -198,96 +198,9 @@ def status():
     return jsonify(ok=True, left=_cur["L"], right=_cur["R"], pwm_hz=PWM_FREQ_HZ,
                    duty_min=DUTY_MIN, duty_max=DUTY_MAX)
 
-# ==================== Simple index with arrow keys ====================
-INDEX_HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Pi Cam + Dual Motor</title>
-<style>
-  body{font-family:system-ui;margin:0;background:#111;color:#eee}
-  #v{max-width:640px;width:100%;display:block;margin:16px auto;border:1px solid #333;border-radius:8px}
-  .wrap{max-width:900px;margin:0 auto;padding:0 16px;text-align:center}
-  .kbd{display:inline-block;border:1px solid #555;border-radius:6px;background:#222;padding:3px 8px;margin:0 2px}
-  button{background:#2b2b2b;color:#eee;border:1px solid #444;border-radius:10px;padding:10px 14px;margin:6px;cursor:pointer}
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <img id="v" src="/video_feed" alt="Live video">
-    <p>Click page to focus. Hold:
-      <span class="kbd">↑</span> forward,
-      <span class="kbd">↓</span> reverse,
-      <span class="kbd">←</span> pivot left,
-      <span class="kbd">→</span> pivot right. Release = stop.</p>
-    <div>
-      <button id="btnFwd">Forward (↑)</button>
-      <button id="btnRev">Reverse (↓)</button>
-      <button id="btnL">Pivot Left (←)</button>
-      <button id="btnR">Pivot Right (→)</button>
-      <button id="btnStop">Stop</button>
-    </div>
-    <pre id="status">L: dir 0 duty 0.00 | R: dir 0 duty 0.00</pre>
-  </div>
-<script>
-async function postJSON(url, body){
-  const res = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) });
-  return res.json();
-}
-function updateStatus(j){
-  const el = document.getElementById("status");
-  if(!el) return;
-  if(j && j.ok){
-    const L = j.left || {dir:0,duty:0}, R = j.right || {dir:0,duty:0};
-    const fmt = x => (typeof x==="number" ? x.toFixed(2) : x);
-    el.textContent = `L: dir ${L.dir} duty ${fmt(L.duty)} | R: dir ${R.dir} duty ${fmt(R.duty)}`;
-  } else if(j && j.error){
-    el.textContent = `error: ${j.error}`;
-  }
-}
-async function drive(left, right){ updateStatus(await postJSON("/drive", {left, right})); }
-async function stop(){ updateStatus(await postJSON("/stop", {})); }
-
-document.getElementById("btnFwd").addEventListener("click", ()=>drive(1, 1));
-document.getElementById("btnRev").addEventListener("click", ()=>drive(-1, -1));
-document.getElementById("btnL").addEventListener("click", ()=>drive(-1, 1));
-document.getElementById("btnR").addEventListener("click", ()=>drive(1, -1));
-document.getElementById("btnStop").addEventListener("click", stop);
-
-// Keyboard: send once on keydown, stop on keyup
-const pressed = new Set();
-window.addEventListener("keydown", (e)=>{
-  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
-  if(pressed.has(e.code)) return;  // ignore auto-repeat
-  pressed.add(e.code);
-  if(e.code==="ArrowUp") drive(1, 1);
-  if(e.code==="ArrowDown") drive(-1, -1);
-  if(e.code==="ArrowLeft") drive(-1, 1);
-  if(e.code==="ArrowRight") drive(1, -1);
-});
-window.addEventListener("keyup", (e)=>{
-  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
-  pressed.delete(e.code);
-  // if no arrow keys are held, stop
-  const anyHeld = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].some(k => pressed.has(k));
-  if(!anyHeld) stop();
-});
-
-// Optional: periodic status
-setInterval(async ()=>{
-  try{
-    const r = await fetch("/status"); updateStatus(await r.json());
-  }catch{}
-}, 3000);
-</script>
-</body>
-</html>
-"""
-
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML)
+    return render_template("index.html")
 
 # ==================== Exit-time cleanup ====================
 def _on_exit():
