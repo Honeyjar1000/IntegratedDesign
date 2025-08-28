@@ -7,10 +7,11 @@ from threading import Lock
 app = Flask(__name__)
 
 # ==================== Camera ====================
+# XRGB8888 or BGR888
 picam2 = Picamera2()
 video_config = picam2.create_video_configuration(
     main={"size": (640, 480), "format": "XRGB8888"},
-    controls={"FrameRate": 24}
+    controls={"FrameRate": 24} # can lower this 15-18? to decrease latency?
 )
 picam2.configure(video_config)
 picam2.start()
@@ -19,18 +20,19 @@ time.sleep(0.2)
 _frame_lock = Lock()
 
 def mjpeg_generator():
-    """Continuous MJPEG stream for /video_feed."""
+    global _last_jpeg
     while True:
-        frame = picam2.capture_array()
-        # keep flip if your camera is upside-down; change to flipCode=0/1/ -1 or remove as needed
-        frame = cv2.flip(frame, -1)
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        frame_bgr = picam2.capture_array()  # already BGR888
+        # remove if you don’t need it:
+        # frame_bgr = cv2.flip(frame_bgr, -1)
+
+        # Lower bitrate -> lower live latency
+        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 60])
         if not ok:
             continue
         with _frame_lock:
-            jpeg = jpg.tobytes()
-        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+            _last_jpeg = jpg.tobytes()
+        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + _last_jpeg + b"\r\n")
 
 @app.get("/video_feed")
 def video_feed():
@@ -46,12 +48,15 @@ ENA_A, IN1_A, IN2_A = 12, 23, 25     # BCM12, BCM23, BCM25
 # Physical channel B (OUT3/OUT4) pins:
 ENA_B, IN3_B, IN4_B = 13, 19, 26     # BCM13, BCM19, BCM26
 
-PWM_FREQ_HZ = 15000       # ultrasonic (quiet)
-DUTY_MIN    = 0.10        # minimum duty when moving
+PWM_FREQ_HZ = 22000       # ultrasonic (quiet)
+DUTY_MIN    = 0.12        # minimum duty when moving
 DUTY_MAX    = 1.00
 BRAKE_TIME  = 0.06        # brief active brake on stop
 
-SPEED_LIMIT = 0.50        # global speed cap 0..1
+GAMMA         = 0.7        # nonlinear boost: duty ~ mag**GAMMA (0.5–0.8 good)
+START_KICK_DUTY = 0.6     # brief “kick” duty to overcome static friction
+START_KICK_MS   = 70      # kick duration in ms
+SPEED_LIMIT = 0.30        # global speed cap 0..1
 
 # Swap logical sides to match wiring: L -> B, R -> A
 LOGICAL2PHYS = {"L": "B", "R": "A"}
@@ -95,19 +100,50 @@ def _apply_one(side, direction, duty):
     pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(duty) if duty > 0 else 0)
 
 def _set_speed_one(side, speed):
+    """
+    speed in [-1,1]; applies polarity, speed limit, trim.
+    Ultrasonic PWM (quiet) + short soft-start kick + non-linear low-end mapping.
+    """
     global SPEED_LIMIT
     s = max(-1.0, min(1.0, float(speed)))
     s *= POLARITY[side]
-    mag = abs(s) * max(0.0, min(1.0, float(SPEED_LIMIT))) * max(0.0, min(2.0, float(TRIM[side])))
+
+    # Compose magnitude with caps
+    mag = abs(s)
+    mag *= max(0.0, min(1.0, float(SPEED_LIMIT)))
+    mag *= max(0.0, min(2.0, float(TRIM[side])))
+
+    # Stop if effectively zero
     if mag < 1e-3:
         ena, in1, in2 = _pins_for(side)
         pi.hardware_PWM(ena, 0, 0); pi.write(in1, 0); pi.write(in2, 0)
         _cur[side]["dir"], _cur[side]["duty"] = 0, 0.0
         return _cur[side]
+
     direction = 1 if s > 0 else -1
-    duty = DUTY_MIN + (DUTY_MAX - DUTY_MIN) * min(1.0, mag)
-    _apply_one(side, direction, duty)
-    _cur[side]["dir"], _cur[side]["duty"] = direction, duty
+
+    # Nonlinear boost: keeps tiny inputs usable while preserving range
+    mag_boosted = pow(mag, GAMMA)  # e.g., 0.25 -> ~0.36 with GAMMA=0.7
+
+    # Map to duty with a minimum floor
+    target_duty = DUTY_MIN + (DUTY_MAX - DUTY_MIN) * min(1.0, mag_boosted)
+
+    ena, in1, in2 = _pins_for(side)
+    if direction > 0:
+        pi.write(in1, 1); pi.write(in2, 0)
+    else:
+        pi.write(in1, 0); pi.write(in2, 1)
+
+    # If previously stopped, give a very short ultrasonic kick
+    was_stopped = (_cur[side]["duty"] <= 1e-6)
+    if was_stopped:
+        kick = max(target_duty, START_KICK_DUTY)
+        pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(kick))
+        time.sleep(START_KICK_MS / 1000.0)
+
+    # Hold at the quiet target duty
+    pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(target_duty))
+    _cur[side]["dir"], _cur[side]["duty"] = direction, target_duty
     return _cur[side]
 
 def stop_all(brake=True):
