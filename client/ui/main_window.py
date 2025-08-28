@@ -226,6 +226,9 @@ class App(tk.Tk):
             self.trimR.set(int(round(float(trim.get("R",1.0))*100)))
             self.trimL_val.set(f"{self.trimL.get()/100:.2f}×")
             self.trimR_val.set(f"{self.trimR.get()/100:.2f}×")
+            servo = st.get("servo")
+            if isinstance(servo, dict) and "angle" in servo:
+                self.servo_angle = float(servo["angle"])
         except Exception:
             pass
 
@@ -269,18 +272,29 @@ class App(tk.Tk):
         else:
             print("Failed to save image.")
 
-    # ---------- Keyboard ----------
     def on_key_press(self, e):
         code = e.keysym
-        if code in self.drive_pressed:  # ignore auto-repeat
-            return
-        if code in ("Up","Down","Left","Right","space"):
+
+        # Arrow keys: hold-to-drive
+        if code in ("Up","Down","Left","Right"):
+            if code in self.drive_pressed:
+                return
             self.drive_pressed.add(code)
-        if code == "Up":    self.drive(-1, -1)
-        if code == "Down":  self.drive( 1,  1)
-        if code == "Left":  self.drive( 1, -1)
-        if code == "Right": self.drive(-1,  1)
-        if code == "space": self.take_photo()
+            if code == "Up":    self.drive(-1, -1)
+            if code == "Down":  self.drive( 1,  1)
+            if code == "Left":  self.drive( 1, -1)
+            if code == "Right": self.drive(-1,  1)
+            return
+
+        if code == "space":
+            self.take_photo(); return
+
+        # MG90S positional: W = "left" (increase angle), S = "down" (decrease angle)
+        STEP_DEG = 3.0   # small, smooth nudges; tweak 2–5°
+        if code in ("w", "W"):
+            self.servo_nudge_angle(+STEP_DEG)
+        elif code in ("s", "S"):
+            self.servo_nudge_angle(-STEP_DEG)
 
     def on_key_release(self, e):
         code = e.keysym
@@ -289,6 +303,23 @@ class App(tk.Tk):
         if not any(k in self.drive_pressed for k in ("Up","Down","Left","Right")):
             self.stop()
 
+    def on_key_release(self, e):
+        code = e.keysym
+        if code in self.drive_pressed:
+            self.drive_pressed.discard(code)
+        if not any(k in self.drive_pressed for k in ("Up","Down","Left","Right")):
+            self.stop()
+
+        # if you want servo to stop when W/S released:
+        if code in ("w", "W", "s", "S"):
+            post_json("/servo", {"stop": True})
+
+
+    def servo_set_angle(self, angle_deg: float):
+        post_json("/servo", {"angle": float(angle_deg)})
+
+    def servo_nudge_angle(self, delta_deg: float):
+        post_json("/servo", {"delta": float(delta_deg)})
     # ---------- Cleanup ----------
     def on_close(self):
         self.running = False

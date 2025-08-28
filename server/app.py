@@ -67,9 +67,21 @@ POLARITY = {"L": -1, "R": +1}
 # Per-wheel trim for straightness
 TRIM = {"L": 1.00, "R": 1.00}
 
+# ===== Positional Servo (MG90S) on physical pin 12 = BCM18 =====
+SERVO_PIN        = 18        # BCM 18
+SERVO_MIN_DEG    = 0         # hard limit
+SERVO_MAX_DEG    = 90       # hard limit per your request
+# Typical MG90S pulse range (tune if needed)
+SERVO_MIN_US     = 500       # ≈ 0°
+SERVO_MAX_US     = 2400      # ≈ 180°
+SERVO_DEFAULT_DEG= 90        # start centered-ish within your 0..145 window
+SERVO_TRIM_US    = 0         # small calibration offset (+/-) if needed
+
 pi = pigpio.pi()
 if not pi.connected:
     raise RuntimeError("pigpio daemon not running. Try: sudo systemctl start pigpiod")
+
+
 
 for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
     pi.set_mode(p, pigpio.OUTPUT)
@@ -77,6 +89,70 @@ for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
 
 _motor_lock = Lock()
 _cur = {"L": {"dir": 0, "duty": 0.0}, "R": {"dir": 0, "duty": 0.0}}
+
+# Servo init
+pi.set_mode(SERVO_PIN, pigpio.OUTPUT)
+
+def _clamp_deg(deg: float) -> float:
+    return max(SERVO_MIN_DEG, min(SERVO_MAX_DEG, float(deg)))
+
+def _deg_to_us(deg: float) -> int:
+    # Map 0..180 deg to pulse, then clamp to your 0..145 window
+    deg = _clamp_deg(deg)
+    us = SERVO_MIN_US + (SERVO_MAX_US - SERVO_MIN_US) * (deg / 180.0)
+    return int(us + SERVO_TRIM_US)
+
+SERVO_ANGLE_DEG = _clamp_deg(SERVO_DEFAULT_DEG)
+pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
+
+@app.route("/servo", methods=["GET", "POST"])
+def servo():
+    """
+    GET  -> current angle & pulse
+    POST -> { "angle": <deg> } absolute OR { "delta": <deg> } relative
+            Optional: { "trim_us": <int> } to tweak center without code edit.
+    Enforces 0..145 deg window.
+    """
+    global SERVO_ANGLE_DEG, SERVO_TRIM_US
+
+    if request.method == "GET":
+        us = _deg_to_us(SERVO_ANGLE_DEG)
+        return jsonify(ok=True,
+                       mode="positional",
+                       angle=SERVO_ANGLE_DEG if 'SERO_ANGLE_DEG' in globals() else SERVO_ANGLE_DEG,
+                       us=us,
+                       pin=SERVO_PIN,
+                       limits={"min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG},
+                       trim_us=SERVO_TRIM_US)
+
+    data = request.get_json(silent=True) or {}
+
+    if "trim_us" in data:
+        try:
+            SERVO_TRIM_US = int(data["trim_us"])
+        except Exception:
+            return jsonify(ok=False, error="trim_us must be integer"), 400
+
+    if "angle" in data:
+        try:
+            ang = float(data["angle"])
+        except Exception:
+            return jsonify(ok=False, error="angle must be a number"), 400
+        SERVO_ANGLE_DEG = _clamp_deg(ang)
+
+    elif "delta" in data:
+        try:
+            d = float(data["delta"])
+        except Exception:
+            return jsonify(ok=False, error="delta must be a number"), 400
+        SERVO_ANGLE_DEG = _clamp_deg(SERVO_ANGLE_DEG + d)
+
+    else:
+        return jsonify(ok=False, error="provide angle or delta (degrees), optional trim_us"), 400
+
+    us = _deg_to_us(SERVO_ANGLE_DEG)
+    pi.set_servo_pulsewidth(SERVO_PIN, us)
+    return jsonify(ok=True, angle=SERVO_ANGLE_DEG, us=us, trim_us=SERVO_TRIM_US)
 
 def _duty_to_hw(d):
     d = max(DUTY_MIN, min(DUTY_MAX, float(d)))
@@ -212,11 +288,25 @@ def status():
         duty_min=DUTY_MIN, duty_max=DUTY_MAX,
         speed_limit=SPEED_LIMIT,
         trim=TRIM,
-        map=LOGICAL2PHYS, polarity=POLARITY
+        map=LOGICAL2PHYS, polarity=POLARITY,
+        servo={
+            "pin": SERVO_PIN,
+            "mode": "positional",
+            "angle_deg": SERVO_ANGLE_DEG,
+            "limits": {"min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG},
+            "trim_us": SERVO_TRIM_US
+        }
     )
 
 # ==================== Exit-time cleanup ====================
 def _on_exit():
+    try:
+        # Hold last angle or stop pulses; most people keep last angle:
+        pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
+        # Or to stop pulses entirely:
+        # pi.set_servo_pulsewidth(SERVO_PIN, 0)
+    except Exception:
+        pass
     try: stop_all(brake=False)
     except Exception: pass
     try: pi.stop()
