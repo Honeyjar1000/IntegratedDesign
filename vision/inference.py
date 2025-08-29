@@ -10,7 +10,7 @@ import socket
 # model_path = "vision/models/yolov8n.pt"
 # model = torch.load(model_path)
 model = YOLO("yolov8n.pt") # NOTE: will later change this to load from models/ folder once we have trained one
-box, label = 0, 0
+box, label = None, None
 inference_running = False
 
 def model_inference_async(frame):
@@ -68,8 +68,7 @@ def on_video_frame(data):
     global box, label, inference_running
 
     # Decode frames
-    img_bytes = base64.b64decode(data['data'])
-    np_arr = np.frombuffer(img_bytes, np.uint8)
+    np_arr = np.frombuffer(data, np.uint8)
     frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
     # Start inference in a separate thread if not already running
@@ -84,8 +83,7 @@ def on_video_frame(data):
         cv2.putText(annotated_frame, str(label), (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
 
     _, buffer = cv2.imencode('.jpg', annotated_frame)
-    img_b64 = base64.b64encode(buffer).decode('utf-8')
-    sio.emit('model_output', {'data': img_b64})
+    sio.emit('model_output', buffer.tobytes())
 
 
 

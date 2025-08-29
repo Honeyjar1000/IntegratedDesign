@@ -89,11 +89,25 @@ setInterval(async ()=>{
 }, 3000);
 
 const socket = io();
-socket.on('video_frame', function(msg) {
-  document.getElementById('v').src = "data:image/jpeg;base64," + msg.data;
+// socket.on('video_frame', function(msg) {
+//   document.getElementById('v').src = "data:image/jpeg;base64," + msg.data;
+// });
+// socket.on('annotated_frame', function(msg) {
+//   document.getElementById('annotated').src = "data:image/jpeg;base64," + msg.data;
+// });
+// For original feed
+socket.on('video_frame', function(buffer) {
+  // buffer is an ArrayBuffer
+  const blob = new Blob([buffer], { type: 'image/jpeg' });
+  const url = URL.createObjectURL(blob);
+  document.getElementById('v').src = url;
 });
-socket.on('annotated_frame', function(msg) {
-  document.getElementById('annotated').src = "data:image/jpeg;base64," + msg.data;
+
+// For annotated feed
+socket.on('annotated_frame', function(buffer) {
+  const blob = new Blob([buffer], { type: 'image/jpeg' });
+  const url = URL.createObjectURL(blob);
+  document.getElementById('annotated').src = url;
 });
 </script>
 </body>

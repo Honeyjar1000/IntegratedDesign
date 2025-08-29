@@ -24,11 +24,8 @@ def capture_frames():
         # Encode frames as jpgs
         _, buffer = cv2.imencode('.jpg', frame) 
 
-        # Encode using base64 to allow frames to be sent over JSON
-        img_b64 = base64.b64encode(buffer).decode('utf-8')
-
         # Emit frames under 'video_frame' event
-        sio.emit('video_frame', {'data': img_b64})
+        sio.emit('video_frame', buffer.tobytes())
         time.sleep(0.05)  # ~20 FPS - NOTE: can change this to increase FPS
     cap.release()
 
@@ -38,7 +35,7 @@ def handle_model_output(data):
     event name. This is necessary since the frontend can only see server events, not client events.
     '''
     # Emit annotated frame to connected clients 
-    sio.emit('annotated_frame', {'data': data['data']})
+    sio.emit('annotated_frame', data)
 
 
 @sio.on('connect')
