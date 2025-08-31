@@ -2,9 +2,13 @@
 from flask import Flask, Response, request, jsonify
 from picamera2 import Picamera2
 import pigpio, cv2, time, atexit
+import threading
 from threading import Lock
+from flask_socketio import SocketIO, emit
+
 
 app = Flask(__name__)
+sio = SocketIO(app)
 
 # ==================== Camera ====================
 # XRGB8888 or BGR888
@@ -34,9 +38,37 @@ def mjpeg_generator():
             _last_jpeg = jpg.tobytes()
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + _last_jpeg + b"\r\n")
 
-@app.get("/video_feed")
-def video_feed():
-    return Response(mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
+def stream_camera():
+    ''' Function for running the picam module upon starting the server
+    '''
+    while True:
+        frame_bgr = picam2.capture_array()
+        ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        if ok:
+            sio.emit('video_frame', jpg.tobytes())
+        time.sleep(1/24)  # match your frame rate
+
+@sio.on('connect')
+def handle_connect():
+    print("Client connected")
+
+    # Start camera streaming thread only once, even if multiple clients connect
+    if not hasattr(sio, 'camera_thread'):
+        sio.camera_thread = threading.Thread(target=stream_camera, daemon=True)
+        sio.camera_thread.start()
+
+@sio.on('model_output')
+def handle_model_output(data):
+    ''' Receives model output from client running model inference. Emits the annotated images under a new 
+    event name. This is necessary since the frontend can only see server events, not client events.
+    '''
+    # Emit annotated frame to connected clients 
+    sio.emit('annotated_frame', data)
+
+
+# @app.get("/video_feed")
+# def video_feed():
+#     return Response(mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.get("/health")
 def health():

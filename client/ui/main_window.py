@@ -10,6 +10,10 @@ from services.api import post_json, get_json
 from services.stream import StreamClient
 from utils.images import (ts_filename, pil_from_bgr, resize_to_width, banner_image, save_bgr)
 
+import socketio
+import threading
+import numpy as np
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -30,10 +34,21 @@ class App(tk.Tk):
         top = tk.Frame(self, bg="#111"); top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         self.live_panel  = self._panel(top, "Live video")
+        self.annotated_panel = self._panel(top, "Annotated video")
         self.photo_panel = self._panel(top, "Last photo", add_take_button=True)
 
         self.live_panel["frame"].pack(side=tk.LEFT, padx=6)
+        self.annotated_panel["frame"].pack(side=tk.LEFT, padx=6)
         self.photo_panel["frame"].pack(side=tk.LEFT, padx=6)
+
+        # ---- Socket.IO client setup ----
+        self.sio = socketio.Client()
+        self.sio.on('video_frame', self.on_video_frame)
+        self.sio.on('annotated_frame', self.on_annotated_frame)
+        self.sio.connect('http://<pi-ip>:5000') # NOTE: NEED TO RETRIEVE THE ACTUAL PI'S IP ADDRESS
+
+        # Start Socket.IO event loop in a thread
+        threading.Thread(target=self.sio.wait, daemon=True).start()
 
         # ---- Controls ----
         controls = tk.Frame(self, bg="#111"); controls.pack(side=tk.TOP, fill=tk.X, padx=10, pady=6)
@@ -103,7 +118,7 @@ class App(tk.Tk):
         self.init_from_pi()
 
         # Loops
-        self.after(100, self.video_loop)
+        # self.after(100, self.video_loop)
         self.after(1000, self.pulse_status)
 
     # ---------- UI basics ----------
@@ -144,6 +159,17 @@ class App(tk.Tk):
         label_widget.imtk = imtk
         label_widget.configure(image=imtk)
 
+    # ---------- WebSocket Event Handlers ----------
+    def on_video_frame(self, data):
+        # data is bytes (JPEG)
+        np_arr = np.frombuffer(data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        self._show_image(self.raw_panel["image"], frame, maxw=LIVE_MAX_WIDTH)
+
+    def on_annotated_frame(self, data):
+        np_arr = np.frombuffer(data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        self._show_image(self.annot_panel["image"], frame, maxw=LIVE_MAX_WIDTH)
     # ---------- Connection / stream loop ----------
     def video_loop(self):
         """Fetch frame with minimal buffering and update the UI.
