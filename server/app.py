@@ -82,16 +82,6 @@ def stream_camera():
         elapsed = time.time() - t0
         sio.sleep(max(0, min_dt - elapsed))
 
-# Forward annotated frames from client back to all clients
-@sio.on("model_output")
-def on_model_output(data):
-    sio.emit("annotated_frame", data, broadcast=True)
-
-# Simple health endpoint (optional)
-@app.get("/health")
-def health():
-    return jsonify(ok=True, service="robot", camera=True)
-
 # ================= Motors (L298N) =================
 # Channel A (OUT1/OUT2)
 ENA_A, IN1_A, IN2_A = 12, 23, 25    # BCM12, BCM23, BCM25
@@ -205,8 +195,8 @@ def on_connect():
         sio.camera_task = sio.start_background_task(stream_camera)
     if not hasattr(sio, "drive_task"):
         sio.drive_task = sio.start_background_task(_drive_apply_loop)
-    if not hasattr(sio, "status_task"):
-        sio.status_task = sio.start_background_task(_status_broadcast_loop)
+    #if not hasattr(sio, "status_task"):
+    #    sio.status_task = sio.start_background_task(_status_broadcast_loop)
 
 @sio.on("disconnect")
 def on_disconnect():
@@ -306,7 +296,7 @@ def on_servo_set(data):
         return {"ok": True, "angle": SERVO_ANGLE_DEG, "us": us, "trim_us": SERVO_TRIM_US}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
+'''
 def _status_broadcast_loop():
     while True:
         try:
@@ -319,7 +309,7 @@ def _status_broadcast_loop():
         except Exception:
             pass
         sio.sleep(0.3)
-
+'''
 # ================= Cleanup =================
 def _on_exit():
     try:
@@ -343,10 +333,4 @@ def _on_exit():
 atexit.register(_on_exit)
 
 if __name__ == "__main__":
-    if not hasattr(sio, "camera_task"):
-        sio.camera_task = sio.start_background_task(stream_camera)
-    if not hasattr(sio, "drive_task"):
-        sio.drive_task = sio.start_background_task(_drive_apply_loop)
-    if not hasattr(sio, "status_task"):
-        sio.status_task = sio.start_background_task(_status_broadcast_loop)
     sio.run(app, host="0.0.0.0", port=5000, debug=False)

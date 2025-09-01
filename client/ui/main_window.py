@@ -149,16 +149,6 @@ class App(tk.Tk):
                 self._render_busy = True
                 self.after(0, self._drain_and_render)
 
-        @self.sio.on("annotated_frame")
-        def on_annotated_frame(jpg_bytes):
-            try:
-                np_arr = np.frombuffer(jpg_bytes, np.uint8)
-                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                if frame is not None:
-                    self.after(0, lambda f=frame: self._show_image(self.annotated_panel["image"], f, maxw=LIVE_MAX_WIDTH))
-            except Exception:
-                pass
-
         # Connect in background so Tk never blocks
         threading.Thread(
             target=lambda: self.sio.connect(PI_URL, namespaces=['/'], transports=['websocket'], wait_timeout=10),
