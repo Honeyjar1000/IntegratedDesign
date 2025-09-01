@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-# Socket.IO-only robot server (Pi)
-# - Uses eventlet if available; falls back to threading backend.
-# - Streams camera frames over 'video_frame'.
-# - Control via socket events: drive, stop, get_status, set_speed_limit, set_trim,
-#   servo_get, servo_set, model_output (forwarded to 'annotated_frame').
-# - Latest-wins motor control + watchdog prevents "lagging out".
-from flask import Flask, request, jsonify
-from flask_socketio import SocketIO
+# Socket.IO robot server for Raspberry Pi (no watchdog).
+# Motors keep last setpoint until /stop or client disconnect.
+
 import atexit, time, cv2, pigpio
+from flask import Flask, jsonify, request
+from flask_socketio import SocketIO
 from picamera2 import Picamera2
 from threading import Lock
 
-# ---------------- Socket.IO setup ----------------
+# ===== Tunables =====
+VIDEO_FPS      = 12
+JPEG_QUALITY   = 40
+DOWNSCALE_TO   = (480, 360)   # None => keep native 640x480
+APPLY_HZ       = 120          # motor apply loop
+
+# ================= Server =================
 app = Flask(__name__)
 try:
-    import eventlet  # if present we get true websockets + greenlets
+    import eventlet  # preferred if installed
     ASYNC_MODE = "eventlet"
 except Exception:
     ASYNC_MODE = "threading"
@@ -23,21 +26,21 @@ sio = SocketIO(
     app,
     cors_allowed_origins="*",
     async_mode=ASYNC_MODE,
-    ping_interval=10,
-    ping_timeout=30,
+    ping_interval=10, ping_timeout=30,
     async_handlers=True,
+    logger=False, engineio_logger=False,
     max_http_buffer_size=20_000_000,
+    engineio_options={"websocket_compression": False},  # JPEG won't compress further
 )
 print("async_mode =", sio.async_mode)
 
-# ---------------- Camera (lazy open + retry) ----------------
+# ================= Camera =================
 picam2 = None
 _cam_lock = Lock()
-VIDEO_FPS = 15
-JPEG_QUALITY = 55
+_clients = set()
 
-def ensure_camera(tries=10, delay=0.5):
-    """Open Picamera2 on demand, retrying if busy, and return it."""
+def ensure_camera(tries=10, delay=0.4):
+    """Open Picamera2 lazily, retry if busy."""
     global picam2
     with _cam_lock:
         if picam2 is not None:
@@ -46,9 +49,8 @@ def ensure_camera(tries=10, delay=0.5):
         for _ in range(tries):
             try:
                 cam = Picamera2()
-                # BGR888 avoids extra color conversion before JPEG
                 cfg = cam.create_video_configuration(
-                    main={"size": (640, 480), "format": "BGR888"},
+                    main={"size": (640, 480), "format": "XRGB8888"},
                     controls={"FrameRate": VIDEO_FPS},
                 )
                 cam.configure(cfg)
@@ -60,51 +62,37 @@ def ensure_camera(tries=10, delay=0.5):
                 time.sleep(delay)
         raise RuntimeError(f"Could not acquire camera: {last_err}")
 
-_clients = set()
-
-@sio.on("connect")
-def on_connect():
-    _clients.add(request.sid)
-    print("Client connected:", request.sid, "total:", len(_clients))
-    # Start background tasks once
-    if not hasattr(sio, "camera_task"):
-        sio.camera_task = sio.start_background_task(stream_camera)
-    if not hasattr(sio, "status_task"):
-        sio.status_task = sio.start_background_task(_status_broadcast_loop)
-    if not hasattr(sio, "drive_task"):
-        sio.drive_task = sio.start_background_task(_drive_apply_loop)
-
-@sio.on("disconnect")
-def on_disconnect():
-    _clients.discard(request.sid)
-    print("Client disconnected:", request.sid, "total:", len(_clients))
-
 def stream_camera():
-    """Continuously capture frames and emit to all clients."""
+    """Capture -> (optional) resize -> JPEG -> emit newest only."""
+    min_dt = 1.0 / max(1, VIDEO_FPS)
     while True:
+        t0 = time.time()
         try:
             if _clients:
                 cam = ensure_camera()
-                frame_bgr = cam.capture_array()
-                ok, jpg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                frame = cam.capture_array()  # BGR888
+                if DOWNSCALE_TO:
+                    frame = cv2.resize(frame, DOWNSCALE_TO, interpolation=cv2.INTER_AREA)
+                ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ok:
                     sio.emit("video_frame", jpg.tobytes(), broadcast=True)
         except Exception:
-            # swallow camera hiccups; retry next tick
             pass
-        sio.sleep(1 / VIDEO_FPS)
+        # pace to VIDEO_FPS without busy looping
+        elapsed = time.time() - t0
+        sio.sleep(max(0, min_dt - elapsed))
 
-# Model output from client → re-broadcast as annotated_frame
+# Forward annotated frames from client back to all clients
 @sio.on("model_output")
-def handle_model_output(data):
+def on_model_output(data):
     sio.emit("annotated_frame", data, broadcast=True)
 
-# ---------------- Health (HTTP) ----------------
+# Simple health endpoint (optional)
 @app.get("/health")
 def health():
     return jsonify(ok=True, service="robot", camera=True)
 
-# ---------------- Motors (L298N) ----------------
+# ================= Motors (L298N) =================
 # Channel A (OUT1/OUT2)
 ENA_A, IN1_A, IN2_A = 12, 23, 25    # BCM12, BCM23, BCM25
 # Channel B (OUT3/OUT4)
@@ -120,8 +108,8 @@ START_KICK_DUTY = 0.6
 START_KICK_MS   = 70
 SPEED_LIMIT     = 0.30
 
-LOGICAL2PHYS = {"L": "B", "R": "A"}
-POLARITY     = {"L": -1, "R": +1}
+LOGICAL2PHYS = {"L": "B", "R": "A"}    # swap to match wiring
+POLARITY     = {"L": -1, "R": +1}      # forward polarity
 TRIM         = {"L": 1.00, "R": 1.00}
 
 # Servo (MG90S) on BCM18
@@ -144,7 +132,6 @@ for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
 _motor_lock = Lock()
 _cur = {"L": {"dir": 0, "duty": 0.0}, "R": {"dir": 0, "duty": 0.0}}
 
-# Servo init
 pi.set_mode(SERVO_PIN, pigpio.OUTPUT)
 
 def _clamp_deg(deg: float) -> float:
@@ -158,31 +145,17 @@ def _deg_to_us(deg: float) -> int:
 SERVO_ANGLE_DEG = _clamp_deg(SERVO_DEFAULT_DEG)
 pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
 
-def _duty_to_hw(d):
+def _duty_to_hw(d):  # 0..1 -> pigpio duty units
     d = max(DUTY_MIN, min(DUTY_MAX, float(d)))
     return int(d * 1_000_000)
 
 def _pins_for(side):
-    phys = LOGICAL2PHYS[side]
-    return (ENA_A, IN1_A, IN2_A) if phys == "A" else (ENA_B, IN3_B, IN4_B)
-
-def _apply_one(side, direction, duty):
-    ena, in1, in2 = _pins_for(side)
-    if direction > 0:
-        pi.write(in1, 1); pi.write(in2, 0)
-    elif direction < 0:
-        pi.write(in1, 0); pi.write(in2, 1)
-    else:
-        pi.write(in1, 0); pi.write(in2, 0)
-    pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(duty) if duty > 0 else 0)
+    return (ENA_A, IN1_A, IN2_A) if LOGICAL2PHYS[side] == "A" else (ENA_B, IN3_B, IN4_B)
 
 def _set_speed_one(side, speed):
     global SPEED_LIMIT
     s = max(-1.0, min(1.0, float(speed))) * POLARITY[side]
-
-    mag = abs(s)
-    mag *= max(0.0, min(1.0, float(SPEED_LIMIT)))
-    mag *= max(0.0, min(2.0, float(TRIM[side])))
+    mag = abs(s) * max(0.0, min(1.0, float(SPEED_LIMIT))) * max(0.0, min(2.0, float(TRIM[side])))
 
     if mag < 1e-3:
         ena, in1, in2 = _pins_for(side)
@@ -195,10 +168,8 @@ def _set_speed_one(side, speed):
     target_duty = DUTY_MIN + (DUTY_MAX - DUTY_MIN) * min(1.0, mag_boosted)
 
     ena, in1, in2 = _pins_for(side)
-    if direction > 0:
-        pi.write(in1, 1); pi.write(in2, 0)
-    else:
-        pi.write(in1, 0); pi.write(in2, 1)
+    if direction > 0: pi.write(in1, 1); pi.write(in2, 0)
+    else:             pi.write(in1, 0); pi.write(in2, 1)
 
     was_stopped = (_cur[side]["duty"] <= 1e-6)
     if was_stopped:
@@ -222,45 +193,61 @@ def stop_all(brake=True):
         _cur["L"] = {"dir":0, "duty":0.0}
         _cur["R"] = {"dir":0, "duty":0.0}
 
-# ---------------- Socket events: control & status ----------------
-# Latest-wins queue and watchdog
+# ====== Socket.IO controls (NO WATCHDOG) ======
 _drive_lock = Lock()
-_last_drive = {"left": 0.0, "right": 0.0, "ts": 0.0}
-WATCHDOG_S = 0.30
-APPLY_HZ   = 50
+_last_drive = {"left": 0.0, "right": 0.0}  # no ts
+
+@sio.on("connect")
+def on_connect():
+    _clients.add(request.sid)
+    print("Client connected:", request.sid, "total:", len(_clients))
+    if not hasattr(sio, "camera_task"):
+        sio.camera_task = sio.start_background_task(stream_camera)
+    if not hasattr(sio, "drive_task"):
+        sio.drive_task = sio.start_background_task(_drive_apply_loop)
+    if not hasattr(sio, "status_task"):
+        sio.status_task = sio.start_background_task(_status_broadcast_loop)
+
+@sio.on("disconnect")
+def on_disconnect():
+    _clients.discard(request.sid)
+    print("Client disconnected:", request.sid, "total:", len(_clients))
+    # Safety: stop motors when a controlling client drops
+    with _drive_lock:
+        _last_drive.update(left=0.0, right=0.0)
+    stop_all(brake=True)
 
 @sio.on("drive")
 def on_drive(data):
-    now = time.time()
     try:
-        left  = float(data.get("left", 0.0))
-        right = float(data.get("right", 0.0))
+        L = float(data.get("left", 0.0))
+        R = float(data.get("right", 0.0))
     except Exception as e:
         return {"ok": False, "error": f"bad payload: {e}"}
     with _drive_lock:
-        _last_drive.update(left=left, right=right, ts=now)
+        _last_drive["left"], _last_drive["right"] = L, R
     return {"ok": True}
 
 @sio.on("stop")
 def on_stop():
     with _drive_lock:
-        _last_drive.update(left=0.0, right=0.0, ts=time.time())
+        _last_drive["left"] = 0.0
+        _last_drive["right"] = 0.0
     stop_all(brake=True)
     return {"ok": True, "left": _cur["L"], "right": _cur["R"]}
 
 def _drive_apply_loop():
+    """Continuously apply the latest setpoints (no watchdog)."""
     while True:
-        now = time.time()
         with _drive_lock:
-            if now - _last_drive["ts"] > WATCHDOG_S:
-                L = R = 0.0
-            else:
-                L = _last_drive["left"]; R = _last_drive["right"]
+            L = _last_drive["left"]
+            R = _last_drive["right"]
         with _motor_lock:
             _set_speed_one("L", L)
             _set_speed_one("R", R)
         sio.sleep(1 / APPLY_HZ)
 
+# ----- status + config -----
 @sio.on("get_status")
 def on_get_status():
     try:
@@ -282,10 +269,6 @@ def on_get_status():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@sio.on("get_speed_limit")
-def on_get_speed_limit():
-    return {"ok": True, "speed_limit": SPEED_LIMIT}
-
 @sio.on("set_speed_limit")
 def on_set_speed_limit(data):
     try:
@@ -294,10 +277,6 @@ def on_set_speed_limit(data):
         return {"ok": True, "speed_limit": SPEED_LIMIT}
     except Exception as e:
         return {"ok": False, "error": "speed_limit must be 0..1: " + str(e)}
-
-@sio.on("get_trim")
-def on_get_trim():
-    return {"ok": True, "trim": TRIM}
 
 @sio.on("set_trim")
 def on_set_trim(data):
@@ -311,19 +290,6 @@ def on_set_trim(data):
         return {"ok": True, "trim": TRIM, "changed": changed}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-@sio.on("servo_get")
-def on_servo_get():
-    us = _deg_to_us(SERVO_ANGLE_DEG)
-    return {
-        "ok": True,
-        "mode": "positional",
-        "angle": SERVO_ANGLE_DEG,
-        "us": us,
-        "pin": SERVO_PIN,
-        "min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG,
-        "trim_us": SERVO_TRIM_US,
-    }
 
 @sio.on("servo_set")
 def on_servo_set(data):
@@ -354,7 +320,7 @@ def _status_broadcast_loop():
             pass
         sio.sleep(0.3)
 
-# ---------------- Cleanup ----------------
+# ================= Cleanup =================
 def _on_exit():
     try:
         if picam2:
@@ -362,7 +328,6 @@ def _on_exit():
     except Exception:
         pass
     try:
-        # keep last servo angle (or set to 0 to stop pulses)
         pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
     except Exception:
         pass
@@ -377,13 +342,11 @@ def _on_exit():
 
 atexit.register(_on_exit)
 
-# ---------------- Main ----------------
 if __name__ == "__main__":
-    # Start background loops; they no-op if no clients are connected.
-    if not hasattr(sio, "status_task"):
-        sio.status_task = sio.start_background_task(_status_broadcast_loop)
+    if not hasattr(sio, "camera_task"):
+        sio.camera_task = sio.start_background_task(stream_camera)
     if not hasattr(sio, "drive_task"):
         sio.drive_task = sio.start_background_task(_drive_apply_loop)
-
-    # Run Socket.IO server (true websockets if eventlet is installed)
+    if not hasattr(sio, "status_task"):
+        sio.status_task = sio.start_background_task(_status_broadcast_loop)
     sio.run(app, host="0.0.0.0", port=5000, debug=False)
