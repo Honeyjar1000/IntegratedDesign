@@ -9,7 +9,8 @@ import socket
 # Load model
 # model_path = "vision/models/yolov8n.pt"
 # model = torch.load(model_path)
-model = YOLO("yolov8n.pt") # NOTE: will later change this to load from models/ folder once we have trained one
+# model = YOLO("yolov8n.pt") # NOTE: will later change this to load from models/ folder once we have trained one
+model = YOLO("tom_vision/models/aug_1.pt")
 box, label = None, None
 inference_running = False
 

@@ -7,10 +7,18 @@ import cv2
 import numpy as np
 import socketio
 import threading
+import time
+import random
 
 from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH, PI_HOST, API_BASE
 from utils.images import ts_filename, banner_image, save_bgr
 
+# Optional: Ultralytics YOLO for detection
+try:
+    from ultralytics import YOLO
+except Exception as _e:
+    YOLO = None
+    _YOLO_IMPORT_ERR = _e
 
 
 class App(tk.Tk):
@@ -21,7 +29,7 @@ class App(tk.Tk):
         self.geometry("1360x760")
         self.configure(bg="#111")
 
-        # State
+        # ---------------- State ----------------
         self.connected = False
         self.running = True
         self.last_frame_bgr = None
@@ -33,26 +41,39 @@ class App(tk.Tk):
         self._spd_job = None
         self._trimL_job = None
         self._trimR_job = None
-        self._spd_job = None
-        self._trimL_job = None
 
         # suppress programmatic slider->callback loops
         self._suppress_spd_cb = False
 
-        # drop-frame render control
+        # drop-frame render control (raw JPEG decoding)
         self._render_busy = False
         self._latest_jpg = None
 
-        # ---- UI: top row ----
-        top = tk.Frame(self, bg="#111"); top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        # detection pipeline state
+        self.det_enabled = True  # if model loads
+        self.det_conf = 0.25
+        self.det_model = None
+        self.det_names = {}
+        self._infer_busy = False
+        self._infer_seq = 0
+        self._latest_for_infer = None  # (frame_bgr, seq)
+
+        # color palette per class id
+        self._cls_colors = {}
+
+        # ---------------- UI: top row ----------------
+        top = tk.Frame(self, bg="#111")
+        top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+
         self.live_panel      = self._panel(top, "Live video")
         self.annotated_panel = self._panel(top, "Annotated video")
         self.photo_panel     = self._panel(top, "Last photo", add_take_button=True)
+
         self.live_panel["frame"].pack(side=tk.LEFT, padx=6)
         self.annotated_panel["frame"].pack(side=tk.LEFT, padx=6)
         self.photo_panel["frame"].pack(side=tk.LEFT, padx=6)
 
-        # ---- Controls ----
+        # ---------------- Controls ----------------
         controls = tk.Frame(self, bg="#111"); controls.pack(side=tk.TOP, fill=tk.X, padx=10, pady=6)
 
         tip = tk.Label(controls, text="Click window to focus. Arrow keys drive. Space saves a photo.",
@@ -60,10 +81,10 @@ class App(tk.Tk):
         tip.pack(pady=(0,8))
 
         btns = tk.Frame(controls, bg="#111"); btns.pack()
-        self._btn(btns, "Forward (↑)",     lambda: self.drive(-1, -1)).pack(side=tk.LEFT, padx=4, pady=4)
-        self._btn(btns, "Reverse (↓)",     lambda: self.drive( 1,  1)).pack(side=tk.LEFT, padx=4, pady=4)
-        self._btn(btns, "Pivot Left (←)",  lambda: self.drive( 1, -1)).pack(side=tk.LEFT, padx=4, pady=4)
-        self._btn(btns, "Pivot Right (→)", lambda: self.drive(-1,  1)).pack(side=tk.LEFT, padx=4, pady=4)
+        self._btn(btns, "Forward (↑)",     lambda: self.drive( 1,  1)).pack(side=tk.LEFT, padx=4, pady=4)
+        self._btn(btns, "Reverse (↓)",     lambda: self.drive(-1, -1)).pack(side=tk.LEFT, padx=4, pady=4)
+        self._btn(btns, "Pivot Left (←)",  lambda: self.drive(-1,  1)).pack(side=tk.LEFT, padx=4, pady=4)
+        self._btn(btns, "Pivot Right (→)", lambda: self.drive( 1, -1)).pack(side=tk.LEFT, padx=4, pady=4)
         self._btn(btns, "Stop", self.stop).pack(side=tk.LEFT, padx=4, pady=4)
 
         # Speed
@@ -112,13 +133,17 @@ class App(tk.Tk):
         self.bind("<KeyRelease>",self.on_key_release)
         self.focus_force()
 
-        # Waiting banner
+        # Waiting banners
         self.waiting_banner = banner_image(
             ["Waiting for server…", "Press Q to quit."], w=LIVE_MAX_WIDTH, h=int(LIVE_MAX_WIDTH*0.75)
         )
         self._show_image(self.live_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH)
+        self._show_image(self.annotated_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH)
 
-        # ---- Socket.IO client ----
+        # ---------------- Load detection model ----------------
+        self._init_detector()
+
+        # ---------------- Socket.IO client ----------------
         self.sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
 
         @self.sio.event
@@ -135,6 +160,7 @@ class App(tk.Tk):
             self.connected = False
             self._ui_status("Disconnected — retrying…")
             self.after(0, lambda: self._show_image(self.live_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH))
+            self.after(0, lambda: self._show_image(self.annotated_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH))
 
         @self.sio.event
         def connect_error(err):
@@ -161,7 +187,109 @@ class App(tk.Tk):
         # Poll status every second (server also broadcasts)
         self.after(1000, self.poll_status)
 
-    # ---------- UI basics ----------
+    # ------------- Detection -------------
+    def _init_detector(self):
+        """Load YOLO model from models/aug_1.pt; if it fails, keep UI usable."""
+        model_path = Path("models/aug_1.pt")
+        if YOLO is None:
+            self.det_enabled = False
+            self._ui_status(f"YOLO import failed: {getattr(globals(),'_YOLO_IMPORT_ERR', 'unknown')}")
+            return
+        if not model_path.exists():
+            self.det_enabled = False
+            self._ui_status("Model not found: models/aug_1.pt (showing raw video)")
+            return
+        try:
+            self.det_model = YOLO(str(model_path))
+            # class names
+            self.det_names = getattr(self.det_model, "names", {}) or {}
+            self.det_enabled = True
+            self._ui_status("Loaded detector models/aug_1.pt")
+        except Exception as e:
+            self.det_enabled = False
+            self._ui_status(f"Detector load error: {e}")
+
+    def _start_infer(self):
+        """Spawn an inference worker if not already busy."""
+        if not (self.det_enabled and self.det_model):
+            return
+        if self._infer_busy or self._latest_for_infer is None:
+            return
+        frame, seq = self._latest_for_infer
+        self._infer_busy = True
+        threading.Thread(target=self._infer_worker, args=(frame, seq), daemon=True).start()
+
+    def _infer_worker(self, frame_bgr, seq):
+        """Run model inference and schedule annotated rendering."""
+        try:
+            # Ultralytics works with BGR numpy arrays directly
+            results = self.det_model.predict(
+                source=frame_bgr, conf=self.det_conf, verbose=False, imgsz=640, device=None
+            )
+            annotated = self._draw_detections(frame_bgr, results)
+        except Exception as e:
+            annotated = frame_bgr.copy()
+            cv2.putText(annotated, f"Detection error: {e}", (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+
+        # push to UI
+        self.after(0, lambda img=annotated: self._show_image(self.annotated_panel["image"], img, maxw=LIVE_MAX_WIDTH))
+
+        # allow next infer; if a newer frame arrived while we were busy, kick again
+        self._infer_busy = False
+        latest = self._latest_for_infer
+        if latest is not None and latest[1] > seq:
+            self._start_infer()
+
+    def _cls_color(self, cls_id: int):
+        if cls_id not in self._cls_colors:
+            random.seed(cls_id + 12345)
+            self._cls_colors[cls_id] = (
+                int(50 + 205 * random.random()),
+                int(50 + 205 * random.random()),
+                int(50 + 205 * random.random()),
+            )
+        return self._cls_colors[cls_id]
+
+    def _draw_detections(self, frame_bgr, results):
+        """Draw boxes/labels on a copy of the frame."""
+        out = frame_bgr.copy()
+        if not results:
+            return out
+        res = results[0]
+        names = getattr(res, "names", None) or self.det_names or {}
+
+        boxes = getattr(res, "boxes", None)
+        if boxes is None or boxes.xyxy is None:
+            return out
+
+        xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, "cpu") else np.asarray(boxes.xyxy)
+        confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else np.asarray(boxes.conf)
+        clses = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else np.asarray(boxes.cls)
+
+        H, W = out.shape[:2]
+        t = max(1, int(round(min(H, W) / 320)))  # thickness scales with image size
+        tf = max(0.4, min(0.8, t * 0.4))         # font scale
+
+        for (x1, y1, x2, y2), c, k in zip(xyxy, confs, clses):
+            cls_id = int(k) if k is not None else -1
+            color = self._cls_color(cls_id)
+            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, t, cv2.LINE_AA)
+
+            label = names.get(cls_id, f"id{cls_id}") if isinstance(names, dict) else str(cls_id)
+            text = f"{label} {c:.2f}" if c is not None else f"{label}"
+            (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, tf, max(1, t))
+            th = th + bl
+            # text box
+            xt2, yt2 = x1 + tw + 6, y1 + th + 4
+            cv2.rectangle(out, (x1, y1), (xt2, yt2), color, -1, cv2.LINE_AA)
+            cv2.putText(out, text, (x1 + 3, y1 + th - bl), cv2.FONT_HERSHEY_SIMPLEX, tf, (0,0,0), 1, cv2.LINE_AA)
+
+        return out
+
+    # ------------- UI helpers -------------
     def _panel(self, parent, title, add_take_button=False):
         outer = tk.Frame(parent, bg="#111")
         frame = tk.Frame(outer, bg="#1a1a1a", highlightthickness=1)
@@ -183,7 +311,6 @@ class App(tk.Tk):
             im = bgr_or_pil
         else:
             bgr = bgr_or_pil
-            #bgr = cv2.flip(bgr, -1)
             h, w = bgr.shape[:2]
             if w > maxw:
                 scale = maxw / w
@@ -197,7 +324,7 @@ class App(tk.Tk):
     def _ui_status(self, text):
         self.after(0, lambda t=text: self.status.config(text=t))
 
-    # ---------- drop-frame render ----------
+    # ------------- drop-frame decode & render -------------
     def _drain_and_render(self):
         data = self._latest_jpg
         self._latest_jpg = None
@@ -205,14 +332,21 @@ class App(tk.Tk):
             np_arr = np.frombuffer(data, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if frame is not None:
+                # keep last raw
                 self.last_frame_bgr = frame
+                # show raw in left panel
                 self._show_image(self.live_panel["image"], frame, maxw=LIVE_MAX_WIDTH)
+                # forward to detector (drop-frame)
+                self._infer_seq += 1
+                self._latest_for_infer = (frame, self._infer_seq)
+                self._start_infer()
+
         if self._latest_jpg is not None:
             self.after(0, self._drain_and_render)
         else:
             self._render_busy = False
 
-    # ---------- Status ----------
+    # ------------- Status / server comms -------------
     def poll_status(self):
         if self.running and self.connected:
             try:
@@ -234,7 +368,7 @@ class App(tk.Tk):
         fmt = lambda x: f"{x:.2f}" if isinstance(x, (float, int)) else x
         self.status.config(
             text=f"L: dir {L.get('dir',0)} duty {fmt(L.get('duty',0))} | "
-                f"R: dir {R.get('dir',0)} duty {fmt(R.get('duty',0))}"
+                 f"R: dir {R.get('dir',0)} duty {fmt(R.get('duty',0))}"
         )
 
         try:
@@ -265,8 +399,8 @@ class App(tk.Tk):
 
         except Exception:
             pass
-        
-    # ---------- Sliders (DEBOUNCED HANDLERS) ----------
+
+    # ------------- Sliders (debounced) -------------
     def on_speed_input(self, _):
         if getattr(self, "_suppress_spd_cb", False):
             return  # ignore updates caused by programmatic .set()
@@ -279,8 +413,8 @@ class App(tk.Tk):
     def _emit_set_speed_limit(self, frac):
         try:
             self.sio.emit("set_speed_limit",
-                        {"speed_limit": float(frac)},
-                        callback=self._on_ack_update_status)
+                          {"speed_limit": float(frac)},
+                          callback=self._on_ack_update_status)
         except Exception:
             pass
 
@@ -289,8 +423,7 @@ class App(tk.Tk):
         if self._trimL_job:
             self.after_cancel(self._trimL_job)
         self._trimL_job = self.after(
-            150,
-            lambda: self._emit_set_trim("L", self.trimL.get()/100.0)
+            150, lambda: self._emit_set_trim("L", self.trimL.get()/100.0)
         )
 
     def on_trimR_input(self, _):
@@ -298,8 +431,7 @@ class App(tk.Tk):
         if self._trimR_job:
             self.after_cancel(self._trimR_job)
         self._trimR_job = self.after(
-            150,
-            lambda: self._emit_set_trim("R", self.trimR.get()/100.0)
+            150, lambda: self._emit_set_trim("R", self.trimR.get()/100.0)
         )
 
     def _emit_set_trim(self, side, val):
@@ -308,7 +440,7 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    # ---------- Controls ----------
+    # ------------- Controls -------------
     def drive(self, left, right):
         try:
             self.sio.emit("drive", {"left": float(left), "right": float(right)})
@@ -321,7 +453,7 @@ class App(tk.Tk):
         except Exception:
             self._ui_status("stop error")
 
-    # ---------- Photos ----------
+    # ------------- Photos -------------
     def choose_folder(self):
         d = filedialog.askdirectory(initialdir=str(self.save_dir), title="Choose save folder")
         if d:
@@ -339,17 +471,17 @@ class App(tk.Tk):
         else:
             print("Failed to save image.")
 
-    # ---------- Keyboard ----------
+    # ------------- Keyboard -------------
     def on_key_press(self, e):
         code = e.keysym
         if code in ("Up","Down","Left","Right"):
             if code in self.drive_pressed:
                 return
             self.drive_pressed.add(code)
-            if code == "Up":    self.drive(1, 1)
-            if code == "Down":  self.drive( -1,  -1)
-            if code == "Left":  self.drive( -1, 1)
-            if code == "Right": self.drive(1,  -1)
+            if code == "Up":    self.drive( 1,  1)
+            if code == "Down":  self.drive(-1, -1)
+            if code == "Left":  self.drive(-1,  1)
+            if code == "Right": self.drive( 1, -1)
             return
         if code == "space":
             self.take_photo(); return
@@ -368,7 +500,7 @@ class App(tk.Tk):
         if not any(k in self.drive_pressed for k in ("Up","Down","Left","Right")):
             self.stop()
 
-    # ---------- Servo ----------
+    # ------------- Servo -------------
     def servo_set_angle(self, angle_deg: float):
         try:
             self.sio.emit("servo_set", {"angle": float(angle_deg)}, callback=self._on_ack_update_status)
@@ -381,7 +513,7 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    # ---------- Cleanup ----------
+    # ------------- Cleanup -------------
     def on_close(self):
         self.running = False
         try: self.stop()
@@ -389,3 +521,7 @@ class App(tk.Tk):
         try: self.sio.disconnect()
         except: pass
         self.destroy()
+
+
+if __name__ == "__main__":
+    App().mainloop()
