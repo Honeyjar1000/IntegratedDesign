@@ -241,21 +241,7 @@ def _drive_apply_loop():
 @sio.on("get_status")
 def on_get_status():
     try:
-        return {
-            "ok": True,
-            "left": _cur["L"], "right": _cur["R"],
-            "pwm_hz": PWM_FREQ_HZ,
-            "duty_min": DUTY_MIN, "duty_max": DUTY_MAX,
-            "speed_limit": SPEED_LIMIT,
-            "trim": TRIM,
-            "map": LOGICAL2PHYS, "polarity": POLARITY,
-            "servo": {
-                "pin": SERVO_PIN,
-                "angle": SERVO_ANGLE_DEG,
-                "us": _deg_to_us(SERVO_ANGLE_DEG),
-                "min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG,
-            },
-        }
+        return _status_dict()
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -264,7 +250,10 @@ def on_set_speed_limit(data):
     try:
         v = float(data.get("speed_limit"))
         globals()["SPEED_LIMIT"] = max(0.0, min(1.0, v))
-        return {"ok": True, "speed_limit": SPEED_LIMIT}
+        payload = _status_dict()
+        # immediately broadcast the fresh state so UIs don't bounce back
+        sio.emit("status", payload, broadcast=True)
+        return payload
     except Exception as e:
         return {"ok": False, "error": "speed_limit must be 0..1: " + str(e)}
 
@@ -296,7 +285,7 @@ def on_servo_set(data):
         return {"ok": True, "angle": SERVO_ANGLE_DEG, "us": us, "trim_us": SERVO_TRIM_US}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-'''
+
 def _status_broadcast_loop():
     while True:
         try:
@@ -309,7 +298,24 @@ def _status_broadcast_loop():
         except Exception:
             pass
         sio.sleep(0.3)
-'''
+
+def _status_dict():
+    return {
+        "ok": True,
+        "left": _cur["L"], "right": _cur["R"],
+        "pwm_hz": PWM_FREQ_HZ,
+        "duty_min": DUTY_MIN, "duty_max": DUTY_MAX,
+        "speed_limit": SPEED_LIMIT,
+        "trim": TRIM,
+        "map": LOGICAL2PHYS, "polarity": POLARITY,
+        "servo": {
+            "pin": SERVO_PIN,
+            "angle": SERVO_ANGLE_DEG,
+            "us": _deg_to_us(SERVO_ANGLE_DEG),
+            "min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG,
+        },
+    }
+
 # ================= Cleanup =================
 def _on_exit():
     try:

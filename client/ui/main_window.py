@@ -33,6 +33,11 @@ class App(tk.Tk):
         self._spd_job = None
         self._trimL_job = None
         self._trimR_job = None
+        self._spd_job = None
+        self._trimL_job = None
+
+        # suppress programmatic slider->callback loops
+        self._suppress_spd_cb = False
 
         # drop-frame render control
         self._render_busy = False
@@ -223,41 +228,59 @@ class App(tk.Tk):
     def _apply_status_dict(self, st: dict):
         if not isinstance(st, dict) or not st.get("ok", True):
             return
+
+        # status text (safe)
         L, R = st.get("left", {}), st.get("right", {})
         fmt = lambda x: f"{x:.2f}" if isinstance(x, (float, int)) else x
         self.status.config(
             text=f"L: dir {L.get('dir',0)} duty {fmt(L.get('duty',0))} | "
-                 f"R: dir {R.get('dir',0)} duty {fmt(R.get('duty',0))}"
+                f"R: dir {R.get('dir',0)} duty {fmt(R.get('duty',0))}"
         )
+
         try:
-            frac = float(st.get("speed_limit", 0.5))
-            self.spd.set(int(round(frac*100)))
-            self.spd_val.set(f"{int(round(frac*100))}%")
-            trim = st.get("trim", {"L":1.0,"R":1.0})
-            self.trimL.set(int(round(float(trim.get("L",1.0))*100)))
-            self.trimR.set(int(round(float(trim.get("R",1.0))*100)))
-            self.trimL_val.set(f"{self.trimL.get()/100:.2f}×")
-            self.trimR_val.set(f"{self.trimR.get()/100:.2f}×")
-            servo = st.get("servo")
-            if isinstance(servo, dict) and "angle" in servo:
-                self.servo_angle = float(servo["angle"])
+            # --- speed limit: only if server sent it ---
+            if "speed_limit" in st:
+                frac = float(st["speed_limit"])
+                pct = int(round(frac * 100))
+                self._suppress_spd_cb = True
+                try:
+                    self.spd.set(pct)
+                finally:
+                    self._suppress_spd_cb = False
+                self.spd_val.set(f"{pct}%")
+
+            # --- trims: only if present ---
+            if "trim" in st and isinstance(st["trim"], dict):
+                trim = st["trim"]
+                if "L" in trim:
+                    v = int(round(float(trim["L"]) * 100))
+                    self.trimL.set(v); self.trimL_val.set(f"{v/100:.2f}×")
+                if "R" in trim:
+                    v = int(round(float(trim["R"]) * 100))
+                    self.trimR.set(v); self.trimR_val.set(f"{v/100:.2f}×")
+
+            # --- servo: only if present ---
+            if isinstance(st.get("servo"), dict) and "angle" in st["servo"]:
+                self.servo_angle = float(st["servo"]["angle"])
+
         except Exception:
             pass
-
+        
     # ---------- Sliders (DEBOUNCED HANDLERS) ----------
     def on_speed_input(self, _):
+        if getattr(self, "_suppress_spd_cb", False):
+            return  # ignore updates caused by programmatic .set()
         val = self.spd.get()
         self.spd_val.set(f"{val}%")
         if self._spd_job:
             self.after_cancel(self._spd_job)
-        self._spd_job = self.after(
-            150,
-            lambda: self._emit_set_speed_limit(val/100.0)
-        )
+        self._spd_job = self.after(150, lambda: self._emit_set_speed_limit(val/100.0))
 
     def _emit_set_speed_limit(self, frac):
         try:
-            self.sio.emit("set_speed_limit", {"speed_limit": float(frac)}, callback=self._on_ack_update_status)
+            self.sio.emit("set_speed_limit",
+                        {"speed_limit": float(frac)},
+                        callback=self._on_ack_update_status)
         except Exception:
             pass
 
