@@ -8,11 +8,9 @@ import numpy as np
 import socketio
 import threading
 
-from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH
+from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH, PI_HOST
 from utils.images import ts_filename, banner_image, save_bgr
 
-# ---- Set your Pi URL here ----
-PI_URL = "http://172.20.10.4:5000"
 
 
 class App(tk.Tk):
@@ -121,7 +119,7 @@ class App(tk.Tk):
         @self.sio.event
         def connect():
             self.connected = True
-            self._ui_status(f"Connected to {PI_URL}")
+            self._ui_status(f"Connected to {PI_HOST}")
             try:
                 self.sio.emit("get_status", callback=self._on_ack_update_status)
             except Exception:
@@ -151,7 +149,7 @@ class App(tk.Tk):
 
         # Connect in background so Tk never blocks
         threading.Thread(
-            target=lambda: self.sio.connect(PI_URL, namespaces=['/'], transports=['websocket'], wait_timeout=10),
+            target=lambda: self.sio.connect(PI_HOST, namespaces=['/'], transports=['websocket'], wait_timeout=10),
             daemon=True
         ).start()
 
