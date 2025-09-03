@@ -103,7 +103,7 @@ POLARITY     = {"L": -1, "R": +1}      # forward polarity
 TRIM         = {"L": 1.00, "R": 1.00}
 
 # Servo (MG90S) on BCM18
-SERVO_PIN         = 18
+SERVO_PIN         = 24
 SERVO_MIN_DEG     = 0
 SERVO_MAX_DEG     = 90
 SERVO_MIN_US      = 500

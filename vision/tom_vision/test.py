@@ -14,7 +14,7 @@ import yaml
 def parse_args():
     p = argparse.ArgumentParser("Interactive grid of detections (TP=green, FP=red, FN=yellow)")
     p.add_argument("--dataset", choices=["aug","no_aug"], default="aug")
-    p.add_argument("--weights", required=True, help="Trained weights .pt")
+    p.add_argument("--weights", default="models/aug_1.pt", help="Trained weights .pt")
     p.add_argument("--split", choices=["test","valid","val"], default="test",
                    help="Preferred split; falls back automatically if empty")
     p.add_argument("--rows", type=int, default=5)

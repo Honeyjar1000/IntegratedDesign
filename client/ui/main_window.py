@@ -8,7 +8,7 @@ import numpy as np
 import socketio
 import threading
 
-from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH, PI_HOST
+from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH, PI_HOST, API_BASE
 from utils.images import ts_filename, banner_image, save_bgr
 
 
@@ -149,7 +149,7 @@ class App(tk.Tk):
 
         # Connect in background so Tk never blocks
         threading.Thread(
-            target=lambda: self.sio.connect(PI_HOST, namespaces=['/'], transports=['websocket'], wait_timeout=10),
+            target=lambda: self.sio.connect(API_BASE, namespaces=['/'], transports=['websocket'], wait_timeout=10),
             daemon=True
         ).start()
 
@@ -178,7 +178,7 @@ class App(tk.Tk):
             im = bgr_or_pil
         else:
             bgr = bgr_or_pil
-            bgr = cv2.flip(bgr, -1)
+            #bgr = cv2.flip(bgr, -1)
             h, w = bgr.shape[:2]
             if w > maxw:
                 scale = maxw / w
@@ -332,9 +332,9 @@ class App(tk.Tk):
             self.take_photo(); return
         STEP_DEG = 3.0
         if code in ("w","W"):
-            self.servo_nudge_angle(+STEP_DEG)
-        elif code in ("s","S"):
             self.servo_nudge_angle(-STEP_DEG)
+        elif code in ("s","S"):
+            self.servo_nudge_angle(+STEP_DEG)
         elif code in ("q","Q"):
             self.on_close()
 
