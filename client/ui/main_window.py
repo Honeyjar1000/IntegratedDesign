@@ -13,6 +13,9 @@ import random
 from config import WINDOW_TITLE, SAVE_DIR, LIVE_MAX_WIDTH, PHOTO_MAX_WIDTH, PI_HOST, API_BASE
 from utils.images import ts_filename, banner_image, save_bgr
 
+
+MODEL = "no_aug_flip"
+
 # Optional: Ultralytics YOLO for detection
 try:
     from ultralytics import YOLO
@@ -51,7 +54,7 @@ class App(tk.Tk):
 
         # detection pipeline state
         self.det_enabled = True  # if model loads
-        self.det_conf = 0.25
+        self.det_conf = 0.7
         self.det_model = None
         self.det_names = {}
         self._infer_busy = False
@@ -189,8 +192,8 @@ class App(tk.Tk):
 
     # ------------- Detection -------------
     def _init_detector(self):
-        """Load YOLO model from models/aug_1.pt; if it fails, keep UI usable."""
-        model_path = Path("models/aug_1.pt")
+        """Load YOLO model from models/{MODEL}.pt; if it fails, keep UI usable."""
+        model_path = Path(f"models/{MODEL}.pt")
         if YOLO is None:
             self.det_enabled = False
             self._ui_status(f"YOLO import failed: {getattr(globals(),'_YOLO_IMPORT_ERR', 'unknown')}")
@@ -204,7 +207,7 @@ class App(tk.Tk):
             # class names
             self.det_names = getattr(self.det_model, "names", {}) or {}
             self.det_enabled = True
-            self._ui_status("Loaded detector models/aug_1.pt")
+            self._ui_status(f"Loaded detector models/{MODEL}.pt")
         except Exception as e:
             self.det_enabled = False
             self._ui_status(f"Detector load error: {e}")
@@ -485,7 +488,7 @@ class App(tk.Tk):
             return
         if code == "space":
             self.take_photo(); return
-        STEP_DEG = 3.0
+        STEP_DEG = 2.0
         if code in ("w","W"):
             self.servo_nudge_angle(-STEP_DEG)
         elif code in ("s","S"):
