@@ -464,6 +464,12 @@ class App(tk.Tk):
         except Exception:
             self._ui_status("drive error")
 
+    def stop(self):
+        try:
+            self.sio.emit("stop", callback=self._on_ack_update_status)
+        except Exception:
+            self._ui_status("stop error")
+
     # ------------- Photos -------------
     def choose_folder(self):
         d = filedialog.askdirectory(initialdir=str(self.save_dir), title="Choose save folder")
