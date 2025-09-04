@@ -212,11 +212,18 @@ def on_drive(data):
     try:
         L = float(data.get("left", 0.0))
         R = float(data.get("right", 0.0))
+
+        # Calculate latency from client timestamp and server timestamp
+        client_ts = float(data.get("client_ts", 0))
+        server_ts = time.time()
+        latency_ms = None
+        if client_ts:
+            latency_ms = (server_ts - client_ts) * 1000
     except Exception as e:
         return {"ok": False, "error": f"bad payload: {e}"}
     with _drive_lock:
         _last_drive["left"], _last_drive["right"] = L, R
-    return {"ok": True}
+    return {"ok": True, "latency_ms": latency_ms}
 
 @sio.on("stop")
 def on_stop():

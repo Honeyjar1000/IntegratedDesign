@@ -443,15 +443,23 @@ class App(tk.Tk):
     # ------------- Controls -------------
     def drive(self, left, right):
         try:
-            self.sio.emit("drive", {"left": float(left), "right": float(right)})
+            payload = {
+                "left": float(left),
+                "right": float(right),
+                "client_ts": time.time()
+            }
+
+            def on_callback(data):
+                ''' Handler for the app server callback 
+                '''
+                latency = data.get("latency_ms")
+                if latency is not None:
+                    self._ui_status(f"Last motor latency: {latency:.1f} ms")
+
+            # Emit data and wait for latency callback from the app server
+            self.sio.emit("drive", payload, callback=on_callback)
         except Exception:
             self._ui_status("drive error")
-
-    def stop(self):
-        try:
-            self.sio.emit("stop", callback=self._on_ack_update_status)
-        except Exception:
-            self._ui_status("stop error")
 
     # ------------- Photos -------------
     def choose_folder(self):
