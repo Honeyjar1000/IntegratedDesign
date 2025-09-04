@@ -2,7 +2,7 @@ from pathlib import Path
 
 # ===================== CONFIG =====================
 #PI_HOST    = "172.20.10.4"               # Pi IP/hostname
-PI_HOST    = "172.20.10.9"               # Pi IP/hostname
+PI_HOST    = "172.20.10.10"               # Pi IP/hostname
 PORT       = 5000
 API_BASE   = f"http://{PI_HOST}:{PORT}"
 STREAM_URL = f"{API_BASE}/video_feed"
