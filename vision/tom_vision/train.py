@@ -14,7 +14,7 @@ import os
 
 def parse_args():
     p = argparse.ArgumentParser("Train YOLO on aug/no_aug; saves to models/")
-    p.add_argument("--dataset", choices=["aug", "no_aug"], default="aug")
+    p.add_argument("--dataset", choices=["aug", "no_aug", "no_aug_flip"], default="aug")
     # Try v12 by default; will fall back to v11 if not supported on your install
     p.add_argument("--weights", default="yolov12n.pt",
                    help="Pretrained base; auto-download if recognized (e.g., yolov12n.pt, yolo11n.pt, yolov8n.pt)")

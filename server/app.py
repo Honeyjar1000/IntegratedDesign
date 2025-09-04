@@ -9,9 +9,10 @@ from picamera2 import Picamera2
 from threading import Lock
 
 # ===== Tunables =====
-VIDEO_FPS      = 12
+VIDEO_FPS      = 24
 JPEG_QUALITY   = 40
-DOWNSCALE_TO   = (480, 360)   # None => keep native 640x480
+#DOWNSCALE_TO   = (480, 360)   # None => keep native 640x480
+DOWNSCALE_TO   = (640,480)   # None => keep native 640x480
 APPLY_HZ       = 120          # motor apply loop
 
 # ================= Server =================
