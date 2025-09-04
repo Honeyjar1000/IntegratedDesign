@@ -455,8 +455,10 @@ class App(tk.Tk):
             def on_callback(data):
                 ''' Handler for the app server callback 
                 '''
-                latency = data.get("latency_ms")
-                if latency is not None:
+                client_ts = data.get("client_ts")
+                if client_ts is not None:
+                    curr_ts = time.time()
+                    latency = (curr_ts - client_ts) * 500 # * 1000 for ms, /2 for round trip
                     self._ui_status(f"Last motor latency: {latency:.1f} ms")
 
             # Emit data and wait for latency callback from the app server
