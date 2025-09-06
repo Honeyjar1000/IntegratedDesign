@@ -85,9 +85,9 @@ def stream_camera():
 
 # ================= Motors (L298N) =================
 # Channel A (OUT1/OUT2)
-ENA_A, IN1_A, IN2_A = 12, 23, 25    # BCM12, BCM23, BCM25
+ENA_A, IN1_A, IN2_A = 12, 23, 24    # 32, 16, 18
 # Channel B (OUT3/OUT4)
-ENA_B, IN3_B, IN4_B = 13, 19, 26    # BCM13, BCM19, BCM26
+ENA_B, IN3_B, IN4_B = 13, 19, 26    # 33, 35, 37
 
 PWM_FREQ_HZ = 22000
 DUTY_MIN    = 0.12
