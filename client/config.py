@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # ===================== CONFIG =====================
-PI_HOST    = "172.20.10.10"               # Pi IP/hostname
+PI_HOST    = "172.20.10.11"               # Pi IP/hostname
 PORT       = 5000
 API_BASE   = f"http://{PI_HOST}:{PORT}"
 STREAM_URL = f"{API_BASE}/video_feed"
@@ -16,3 +16,6 @@ PHOTO_MAX_WIDTH  = 320                   # width to display last photo
 # ==================================================
 
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# Test-NetConnection 172.20.10.9 -Port 5000     
