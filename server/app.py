@@ -51,7 +51,7 @@ def ensure_camera(tries=10, delay=0.4):
             try:
                 cam = Picamera2()
                 cfg = cam.create_video_configuration(
-                    main={"size": (1296, 972), "format": "BGR888"},
+                    main={"size": (640,480), "format": "BGR888"},
                     controls={"FrameRate": VIDEO_FPS},
                 )
                 cam.configure(cfg)
@@ -108,18 +108,18 @@ TRIM         = {"L": 1.00, "R": 1.00}
 # Servo (MG90S) on BCM18
 SERVO_PIN         = 5
 SERVO_MIN_DEG     = 0
-SERVO_MAX_DEG     = 90
-SERVO_MIN_US      = 500
-SERVO_MAX_US      = 2400
+SERVO_MAX_DEG     = 180
+SERVO_MIN_US      = 1000
+SERVO_MAX_US      = 2000
 SERVO_DEFAULT_DEG = 90
 SERVO_TRIM_US     = 0
 
 # Servo (MG90S) on BCM18
 SERVO2_PIN         = 6
 SERVO2_MIN_DEG     = 0
-SERVO2_MAX_DEG     = 90
-SERVO2_MIN_US      = 500
-SERVO2_MAX_US      = 2400
+SERVO2_MAX_DEG     = 180
+SERVO2_MIN_US      = 1000
+SERVO2_MAX_US      = 2000
 SERVO2_DEFAULT_DEG = 90
 SERVO2_TRIM_US     = 0
 
