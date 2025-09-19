@@ -83,7 +83,7 @@ def stream_camera():
         elapsed = time.time() - t0
         sio.sleep(max(0, min_dt - elapsed))
 
-# ================= Motors (L298N) =================
+# ================= Motors =================
 # Channel A (OUT1/OUT2)
 ENA_A, IN1_A, IN2_A = 12, 23, 24    # 32, 16, 18
 # Channel B (OUT3/OUT4)
@@ -131,12 +131,12 @@ for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
     pi.set_mode(p, pigpio.OUTPUT)
     pi.write(p, 0)
 
-'''
+
 STBY = 25
 if STBY is not None:
     pi.set_mode(STBY, pigpio.OUTPUT)
     pi.write(STBY, 1)
-'''
+
 
 _motor_lock = Lock()
 _cur = {"L": {"dir": 0, "duty": 0.0}, "R": {"dir": 0, "duty": 0.0}}
