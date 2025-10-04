@@ -44,10 +44,6 @@ class InputHandler:
             self.servo_controller.nudge_angle(-STEP_DEG)
         elif code in ("s", "S"):
             self.servo_controller.nudge_angle(STEP_DEG)
-        elif code in ("a", "A"):
-            self.servo_controller.nudge_angle_2(-STEP_DEG)
-        elif code in ("d", "D"):
-            self.servo_controller.nudge_angle_2(STEP_DEG)
         elif code in ("q", "Q"):
             self.app_close_callback()
     

@@ -24,22 +24,6 @@ class ServoController:
                                    callback=self._on_ack_update_status)
         except Exception:
             pass
-
-    def set_angle_2(self, angle_deg: float):
-        """Set second servo to specific angle."""
-        try:
-            self.socket_client.emit("servo2_set", {"angle": float(angle_deg)}, 
-                                   callback=self._on_ack_update_status)
-        except Exception:
-            pass
-
-    def nudge_angle_2(self, delta_deg: float):
-        """Nudge second servo by delta angle."""
-        try:
-            self.socket_client.emit("servo2_set", {"delta": float(delta_deg)}, 
-                                   callback=self._on_ack_update_status)
-        except Exception:
-            pass
     
     def _on_ack_update_status(self, data):
         """Handle status update from server."""
