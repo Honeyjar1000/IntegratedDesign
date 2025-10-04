@@ -24,13 +24,13 @@ class InputHandler:
                 return
             self.drive_pressed.add(code)
             
-            if code == "Up":
+            if code == "Left":
                 self.drive_controller.drive(1, 1)
-            elif code == "Down":
-                self.drive_controller.drive(-1, -1)
-            elif code == "Left":
-                self.drive_controller.drive(-1, 1)
             elif code == "Right":
+                self.drive_controller.drive(-1, -1)
+            elif code == "Up":
+                self.drive_controller.drive(-1, 1)
+            elif code == "Down":
                 self.drive_controller.drive(1, -1)
             return
         
