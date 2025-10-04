@@ -51,7 +51,7 @@ def ensure_camera(tries=10, delay=0.4):
             try:
                 cam = Picamera2()
                 cfg = cam.create_video_configuration(
-                    main={"size": (640, 480), "format": "XRGB8888"},
+                    main={"size": (640,480), "format": "BGR888"},
                     controls={"FrameRate": VIDEO_FPS},
                 )
                 cam.configure(cfg)
@@ -83,11 +83,13 @@ def stream_camera():
         elapsed = time.time() - t0
         sio.sleep(max(0, min_dt - elapsed))
 
-# ================= Motors (L298N) =================
+# ================= Motors =================
 # Channel A (OUT1/OUT2)
-ENA_A, IN1_A, IN2_A = 12, 23, 25    # BCM12, BCM23, BCM25
+ENA_A, IN1_A, IN2_A = 12, 23, 24    # 32, 16, 18
 # Channel B (OUT3/OUT4)
-ENA_B, IN3_B, IN4_B = 13, 19, 26    # BCM13, BCM19, BCM26
+ENA_B, IN3_B, IN4_B = 13, 19, 26    # 33, 35, 37
+
+
 
 PWM_FREQ_HZ = 22000
 DUTY_MIN    = 0.12
@@ -104,13 +106,22 @@ POLARITY     = {"L": -1, "R": +1}      # forward polarity
 TRIM         = {"L": 1.00, "R": 1.00}
 
 # Servo (MG90S) on BCM18
-SERVO_PIN         = 24
+SERVO_PIN         = 5
 SERVO_MIN_DEG     = 0
-SERVO_MAX_DEG     = 90
-SERVO_MIN_US      = 500
-SERVO_MAX_US      = 2400
+SERVO_MAX_DEG     = 180
+SERVO_MIN_US      = 1000
+SERVO_MAX_US      = 2000
 SERVO_DEFAULT_DEG = 90
 SERVO_TRIM_US     = 0
+
+# Servo (MG90S) on BCM18
+SERVO2_PIN         = 6
+SERVO2_MIN_DEG     = 0
+SERVO2_MAX_DEG     = 180
+SERVO2_MIN_US      = 1000
+SERVO2_MAX_US      = 2000
+SERVO2_DEFAULT_DEG = 90
+SERVO2_TRIM_US     = 0
 
 pi = pigpio.pi()
 if not pi.connected:
@@ -120,10 +131,18 @@ for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
     pi.set_mode(p, pigpio.OUTPUT)
     pi.write(p, 0)
 
+
+STBY = 25
+if STBY is not None:
+    pi.set_mode(STBY, pigpio.OUTPUT)
+    pi.write(STBY, 1)
+
+
 _motor_lock = Lock()
 _cur = {"L": {"dir": 0, "duty": 0.0}, "R": {"dir": 0, "duty": 0.0}}
 
 pi.set_mode(SERVO_PIN, pigpio.OUTPUT)
+pi.set_mode(SERVO2_PIN, pigpio.OUTPUT)
 
 def _clamp_deg(deg: float) -> float:
     return max(SERVO_MIN_DEG, min(SERVO_MAX_DEG, float(deg)))
@@ -133,8 +152,19 @@ def _deg_to_us(deg: float) -> int:
     us = SERVO_MIN_US + (SERVO_MAX_US - SERVO_MIN_US) * (deg / 180.0)
     return int(us + SERVO_TRIM_US)
 
+def _clamp_deg2(deg: float) -> float:
+    return max(SERVO2_MIN_DEG, min(SERVO2_MAX_DEG, float(deg)))
+
+def _deg_to_us2(deg: float) -> int:
+    deg = _clamp_deg2(deg)
+    us = SERVO2_MIN_US + (SERVO2_MAX_US - SERVO2_MIN_US) * (deg / 180.0)
+    return int(us + SERVO2_TRIM_US)
+
 SERVO_ANGLE_DEG = _clamp_deg(SERVO_DEFAULT_DEG)
+SERVO2_ANGLE_DEG = _clamp_deg(SERVO2_DEFAULT_DEG)
+
 pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
+pi.set_servo_pulsewidth(SERVO2_PIN, _deg_to_us2(SERVO2_ANGLE_DEG))
 
 def _duty_to_hw(d):  # 0..1 -> pigpio duty units
     d = max(DUTY_MIN, min(DUTY_MAX, float(d)))
@@ -293,6 +323,22 @@ def on_servo_set(data):
         return {"ok": True, "angle": SERVO_ANGLE_DEG, "us": us, "trim_us": SERVO_TRIM_US}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    
+@sio.on("servo2_set")
+def on_servo2_set(data):
+    try:
+        global SERVO2_ANGLE_DEG, SERVO2_TRIM_US
+        if "trim_us" in data:
+            SERVO2_TRIM_US = int(data["trim_us"])
+        if "angle" in data:
+            SERVO2_ANGLE_DEG = _clamp_deg(float(data["angle"]))
+        elif "delta" in data:
+            SERVO2_ANGLE_DEG = _clamp_deg(SERVO2_ANGLE_DEG + float(data["delta"]))
+        us = _deg_to_us2(SERVO2_ANGLE_DEG)
+        pi.set_servo_pulsewidth(SERVO2_PIN, us)
+        return {"ok": True, "angle": SERVO2_ANGLE_DEG, "us": us, "trim_us": SERVO2_TRIM_US}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 def _status_broadcast_loop():
     while True:
@@ -302,6 +348,7 @@ def _status_broadcast_loop():
                     "left": _cur["L"], "right": _cur["R"],
                     "speed_limit": SPEED_LIMIT, "trim": TRIM,
                     "servo": {"angle": SERVO_ANGLE_DEG, "us": _deg_to_us(SERVO_ANGLE_DEG)},
+                    "servo2": {"angle": SERVO2_ANGLE_DEG, "us": _deg_to_us2(SERVO2_ANGLE_DEG)},
                 }, broadcast=True)
         except Exception:
             pass
@@ -322,6 +369,12 @@ def _status_dict():
             "us": _deg_to_us(SERVO_ANGLE_DEG),
             "min_deg": SERVO_MIN_DEG, "max_deg": SERVO_MAX_DEG,
         },
+        "servo2": {
+            "pin": SERVO2_PIN,
+            "angle": SERVO2_ANGLE_DEG,
+            "us": _deg_to_us(SERVO2_ANGLE_DEG),
+            "min_deg": SERVO2_MIN_DEG, "max_deg": SERVO2_MAX_DEG,
+        },
     }
 
 # ================= Cleanup =================
@@ -333,6 +386,7 @@ def _on_exit():
         pass
     try:
         pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
+        pi.set_servo_pulsewidth(SERVO2_PIN, _deg_to_us2(SERVO2_ANGLE_DEG))
     except Exception:
         pass
     try:
