@@ -51,6 +51,7 @@ class App(tk.Tk):
         # drop-frame render control (raw JPEG decoding)
         self._render_busy = False
         self._latest_jpg = None
+        self._latest_jpg_e = None   # For electrical team camera
 
         # detection pipeline state
         self.det_enabled = True  # if model loads
@@ -70,10 +71,12 @@ class App(tk.Tk):
 
         self.live_panel      = self._panel(top, "Live video")
         self.annotated_panel = self._panel(top, "Annotated video")
+        self.ecam_panel      = self._panel(top, "Electrical Camera Feed")
         self.photo_panel     = self._panel(top, "Last photo", add_take_button=True)
 
         self.live_panel["frame"].pack(side=tk.LEFT, padx=6)
         self.annotated_panel["frame"].pack(side=tk.LEFT, padx=6)
+        self.ecam_panel["frame"].pack(side=tk.LEFT, padx=6)
         self.photo_panel["frame"].pack(side=tk.LEFT, padx=6)
 
         # ---------------- Controls ----------------
@@ -143,6 +146,13 @@ class App(tk.Tk):
         self._show_image(self.live_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH)
         self._show_image(self.annotated_panel["image"], self.waiting_banner, maxw=LIVE_MAX_WIDTH)
 
+        # Audio streaming indicator
+        self.audio_status = tk.Label(controls, text="Audio: Not streaming", fg="#eee", bg="#444", padx=8, pady=4)
+        self.audio_status.pack(pady=(10,0))
+
+        self.audio_level = tk.Label(controls, text="Audio Level: ---", fg="#eee", bg="#444", padx=8, pady=4)
+        self.audio_level.pack(pady=(2,0))
+        
         # ---------------- Load detection model ----------------
         self._init_detector()
 
@@ -180,6 +190,40 @@ class App(tk.Tk):
             if not self._render_busy:
                 self._render_busy = True
                 self.after(0, self._drain_and_render)
+
+        ######## Handlers for electrical team inputs ########
+        @self.sio.on("e_camera_frame")
+        def on_e_frame(jpg_bytes):
+            # drop old frames, save most recent
+            self._latest_jpg_e = jpg_bytes
+
+            # if not already rendering, render most recent frame
+            if not self._render_busy_e:
+                self._render_busy_e = True
+                data = self._latest_jpg_e
+
+                self._latest_jpg_e = None
+                if data is not None:
+                    np_arr = np.frombuffer(data, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        # keep last raw
+                        self.last_frame_bgr = frame
+                        # show raw in left panel
+                        self._show_image(self.ecam_panel["image"], frame, maxw=LIVE_MAX_WIDTH)
+
+
+        self.sio.on("e_audio_frame")
+        def on_e_audio_frame(audio_bytes):
+            # Calculate RMS amplitude from PCM bytes (assume int16, mono)
+            if audio_bytes:
+                # Convert bytes to numpy array
+                audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_np**2))
+                # Normalize to 0-100 (max int16 is 32767)
+                level = int((rms / 32767) * 100)
+                self.after(0, lambda: self.audio_level.config(text=f"Audio Level: {level}"))
+            self.after(0, self._audio_streaming_indicator)
 
         # Connect in background so Tk never blocks
         threading.Thread(
@@ -326,6 +370,12 @@ class App(tk.Tk):
 
     def _ui_status(self, text):
         self.after(0, lambda t=text: self.status.config(text=t))
+
+    def _audio_streaming_indicator(self):
+        """Flash or update the audio status label to show audio is streaming."""
+        self.audio_status.config(text="Audio: Streaming", bg="#2a4")
+        # Reset after 200ms
+        self.after(200, lambda: self.audio_status.config(text="Audio: Not streaming", bg="#444"))
 
     # ------------- drop-frame decode & render -------------
     def _drain_and_render(self):
