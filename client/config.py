@@ -7,8 +7,8 @@ API_BASE   = f"http://{PI_HOST}:{PORT}"
 STREAM_URL = f"{API_BASE}/video_feed"
 
 # local folder to save photos
-# SAVE_DIR   = Path("D:/uni/ECE4179/project/client/imgs")
-SAVE_DIR = Path("C:/Users/khash/OneDrive - Monash University/Documents/Uni/Fifth Year/Semester 2/ECE4191/IntegratedDesign/client/imgs")
+SAVE_DIR   = Path("D:/uni/ECE4179/project/client/imgs")
+# SAVE_DIR = Path("C:/Users/khash/OneDrive - Monash University/Documents/Uni/Fifth Year/Semester 2/ECE4191/IntegratedDesign/client/imgs")
 
 WINDOW_TITLE     = "Robot Control (Laptop UI)"
 STREAM_RETRY_MS  = 1500                  # retry interval while waiting
