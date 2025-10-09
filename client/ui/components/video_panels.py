@@ -78,6 +78,7 @@ class VideoPanelSet:
     
     def show_live_frame(self, frame, max_width):
         """Show frame in live panel."""
+        cv2.flip(frame, 0, frame)
         self.live_panel.show_image(frame, max_width)
     
     def show_annotated_frame(self, frame, max_width):

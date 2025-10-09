@@ -91,7 +91,7 @@ ENA_B, IN3_B, IN4_B = 13, 19, 26    # 33, 35, 37
 
 
 
-PWM_FREQ_HZ = 22000
+PWM_FREQ_HZ = 20000
 DUTY_MIN    = 0.12
 DUTY_MAX    = 1.00
 BRAKE_TIME  = 0.06
@@ -99,7 +99,7 @@ BRAKE_TIME  = 0.06
 GAMMA           = 0.7
 START_KICK_DUTY = 0.6
 START_KICK_MS   = 70
-SPEED_LIMIT     = 0.30
+SPEED_LIMIT     = 1.0
 
 LOGICAL2PHYS = {"L": "B", "R": "A"}    # swap to match wiring
 POLARITY     = {"L": -1, "R": +1}      # forward polarity
