@@ -9,17 +9,18 @@ import cv2
 class FrameProcessor:
     """Handles frame processing pipeline with drop-frame rendering and inference."""
     
-    def __init__(self, detector, annotator, ui_update_callback):
+    def __init__(self, detector, annotator, ui_update_callback, detection_service=None):
         self.detector = detector
         self.annotator = annotator
         self.ui_update_callback = ui_update_callback
+        self.detection_service = detection_service
         
         # Frame processing state
         self._render_busy = False
         self._latest_jpg = None
         self.last_frame_bgr = None
         
-        # Inference pipeline state
+        # Disable automatic inference
         self._infer_busy = False
         self._infer_seq = 0
         self._latest_for_infer = None  # (frame_bgr, seq)
@@ -46,13 +47,14 @@ class FrameProcessor:
                 # Keep last raw frame
                 self.last_frame_bgr = frame
                 
+                # Update detection service with current frame
+                if self.detection_service:
+                    self.detection_service.update_frame(frame)
+                
                 # Show raw frame in live panel
                 self.ui_update_callback(0, lambda: self._show_live_frame(frame))
                 
-                # Forward to detector (drop-frame)
-                self._infer_seq += 1
-                self._latest_for_infer = (frame, self._infer_seq)
-                self._start_infer()
+                # NO automatic inference - only manual detection via 'd' key
 
         # Continue draining if more frames arrived
         if self._latest_jpg is not None:

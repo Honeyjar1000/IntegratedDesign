@@ -13,8 +13,8 @@ Rotation 180°:    x -> 1-x, y -> 1-y
 from pathlib import Path
 import cv2
 
-SRC = Path("data/no_aug")
-DST = Path("data/no_aug_flip")
+SRC = Path("data/new_only")
+DST = Path("data/new_only_flip")
 SPLITS = ["train", "valid", "test"]
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 

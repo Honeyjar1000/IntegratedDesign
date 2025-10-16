@@ -14,6 +14,7 @@ from vision.frame_processor import FrameProcessor
 from services.photo_service import PhotoService
 from services.status_service import StatusService
 from services.settings_service import SettingsService
+from services.detection_service import DetectionService
 from utils.images import banner_image
 
 
@@ -68,22 +69,20 @@ class RobotControlApp:
         """Initialize vision components."""
         self.detector = ObjectDetector(self._ui_status)
         self.annotator = DetectionAnnotator()
-        self.frame_processor = FrameProcessor(
-            self.detector, 
-            self.annotator, 
-            self.window.after
-        )
         
-        # Connect frame processor callbacks to UI
-        self.frame_processor._show_live_frame = lambda frame: self.window.show_live_frame(frame, LIVE_MAX_WIDTH)
-        self.frame_processor._show_annotated_frame = lambda frame: self.window.show_annotated_frame(frame, LIVE_MAX_WIDTH)
+        # Detection service will be initialized after photo service
+        self.detection_service = None
+        
+        # Frame processor will be initialized after detection service
+        self.frame_processor = None
     
     def _init_services(self):
         """Initialize service components."""
-        self.photo_service = PhotoService(
-            lambda: self.frame_processor.last_frame_bgr,
-            lambda frame: self.window.show_photo(frame, PHOTO_MAX_WIDTH)
-        )
+        # Photo service will be initialized after frame processor
+        self.photo_service = None
+        
+        # Detection service will be initialized after photo service
+        self.detection_service = None
         
         # Status service will be initialized after socket client
         self.status_service = None
@@ -114,10 +113,44 @@ class RobotControlApp:
         self.servo_controller = ServoController(self.socket_client)
         self.servo_controller._on_ack_update_status = self.status_service._on_status_response
         
+        # Initialize vision components after socket client
+        self.frame_processor = FrameProcessor(
+            self.detector, 
+            self.annotator, 
+            self.window.after,
+            None  # detection_service will be set after photo_service
+        )
+        
+        # Connect frame processor callbacks to UI
+        self.frame_processor._show_live_frame = lambda frame: self.window.show_live_frame(frame, LIVE_MAX_WIDTH)
+        self.frame_processor._show_annotated_frame = lambda frame: self.window.show_annotated_frame(frame, LIVE_MAX_WIDTH)
+        
+        # Initialize photo service after frame processor
+        self.photo_service = PhotoService(
+            lambda: self.frame_processor.last_frame_bgr,
+            lambda frame: self.window.show_photo(frame, PHOTO_MAX_WIDTH)
+        )
+        
+        # Initialize detection service after photo service
+        self.detection_service = DetectionService(
+            self.detector,
+            self.annotator,
+            self.photo_service,
+            self.window.after
+        )
+        
+        # Connect detection service callbacks
+        self.detection_service._show_annotated_frame = lambda frame: self.window.show_annotated_frame(frame, LIVE_MAX_WIDTH)
+        self.detection_service._update_status = self._ui_status
+        
+        # Update frame processor with detection service
+        self.frame_processor.detection_service = self.detection_service
+        
         self.input_handler = InputHandler(
             self.drive_controller,
             self.servo_controller,
             self.photo_service,
+            self.detection_service,
             self.on_close
         )
         

@@ -1,13 +1,13 @@
 from pathlib import Path
 
 # ===================== CONFIG =====================
-PI_HOST    = "172.20.10.14"               # Pi IP/hostname
+PI_HOST    = "172.20.10.14"               # Pi IP/hostname - UPDATE THIS IF NEEDED
 PORT       = 5000
 API_BASE   = f"http://{PI_HOST}:{PORT}"
 STREAM_URL = f"{API_BASE}/video_feed"
 
 # local folder to save photos
-SAVE_DIR   = Path("D:/uni/ECE4179/project/client/imgs")
+SAVE_DIR   = Path("D:/uni/ECE4191/pics/new_new_new")
 # SAVE_DIR = Path("C:/Users/khash/OneDrive - Monash University/Documents/Uni/Fifth Year/Semester 2/ECE4191/IntegratedDesign/client/imgs")
 
 WINDOW_TITLE     = "Robot Control (Laptop UI)"

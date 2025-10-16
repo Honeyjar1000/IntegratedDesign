@@ -30,8 +30,11 @@ sio = SocketIO(
     ping_interval=10, ping_timeout=30,
     async_handlers=True,
     logger=False, engineio_logger=False,
-    max_http_buffer_size=20_000_000,
-    engineio_options={"websocket_compression": False},  # JPEG won't compress further
+    max_http_buffer_size=500_000,  # Reduced from 20MB to 500KB to prevent lag
+    engineio_options={
+        "websocket_compression": False,  # JPEG won't compress further
+        "max_http_buffer_size": 500_000  # Also limit engine.io buffer
+    },
 )
 print("async_mode =", sio.async_mode)
 
@@ -85,27 +88,26 @@ def stream_camera():
 
 # ================= Motors =================
 # Channel A (OUT1/OUT2)
-ENA_A, IN1_A, IN2_A = 12, 23, 24    # 32, 18, 16
+ENA_A, IN1_A, IN2_A = 12, 23, 24
 # Channel B (OUT3/OUT4)
-ENA_B, IN3_B, IN4_B = 13, 19, 26    # 33, 35, 37
+ENA_B, IN3_B, IN4_B = 13, 19, 26
 
+PWM_FREQ_HZ = 20000       # 20 kHz avoids audible whine
 
-
-PWM_FREQ_HZ = 20000
-DUTY_MIN    = 0.12
-DUTY_MAX    = 1.00
+DUTY_MIN    = 0.16        # overcome friction
+DUTY_MAX    = 0.7
 BRAKE_TIME  = 0.06
 
-GAMMA           = 0.7
-START_KICK_DUTY = 0.6
-START_KICK_MS   = 70
+GAMMA           = 0.6
+START_KICK_DUTY = 0.75
+START_KICK_MS   = 100
 SPEED_LIMIT     = 1.0
 
-LOGICAL2PHYS = {"L": "B", "R": "A"}    # swap to match wiring
+LOGICAL2PHYS = {"L": "B", "R": "A"}    # swap if wiring crossed
 POLARITY     = {"L": -1, "R": +1}      # forward polarity
 TRIM         = {"L": 1.00, "R": 1.00}
 
-# Servo (MG90S) on BCM18
+# Servo (MG90S) on BCM6
 SERVO_PIN         = 6
 SERVO_MIN_DEG     = 0
 SERVO_MAX_DEG     = 180
@@ -115,24 +117,30 @@ SERVO_DEFAULT_DEG = 90
 SERVO_TRIM_US     = 0
 
 
+
 pi = pigpio.pi()
 if not pi.connected:
     raise RuntimeError("pigpio daemon not running. Try: sudo systemctl start pigpiod")
 
+# ----- Configure motor pins -----
 for p in (ENA_A, IN1_A, IN2_A, ENA_B, IN3_B, IN4_B):
     pi.set_mode(p, pigpio.OUTPUT)
     pi.write(p, 0)
 
+for pin in (ENA_A, ENA_B):
+    pi.set_PWM_frequency(pin, PWM_FREQ_HZ)
+    pi.set_PWM_range(pin, 255)
+    pi.set_PWM_dutycycle(pin, 0)
 
 STBY = 25
 if STBY is not None:
     pi.set_mode(STBY, pigpio.OUTPUT)
     pi.write(STBY, 1)
 
-
 _motor_lock = Lock()
 _cur = {"L": {"dir": 0, "duty": 0.0}, "R": {"dir": 0, "duty": 0.0}}
 
+# ----- Servo setup -----
 pi.set_mode(SERVO_PIN, pigpio.OUTPUT)
 
 def _clamp_deg(deg: float) -> float:
@@ -144,56 +152,66 @@ def _deg_to_us(deg: float) -> int:
     return int(us + SERVO_TRIM_US)
 
 SERVO_ANGLE_DEG = _clamp_deg(SERVO_DEFAULT_DEG)
-
 pi.set_servo_pulsewidth(SERVO_PIN, _deg_to_us(SERVO_ANGLE_DEG))
 
-def _duty_to_hw(d):  # 0..1 -> pigpio duty units
+# ----- Helpers -----
+def _duty_to_8bit(d):  # 0..1 → 0..255
     d = max(DUTY_MIN, min(DUTY_MAX, float(d)))
-    return int(d * 1_000_000)
+    return int(d * 255)
 
 def _pins_for(side):
     return (ENA_A, IN1_A, IN2_A) if LOGICAL2PHYS[side] == "A" else (ENA_B, IN3_B, IN4_B)
 
+# ----- Motor control -----
 def _set_speed_one(side, speed):
+    """Set speed for one motor side (-1..+1)."""
     global SPEED_LIMIT
     s = max(-1.0, min(1.0, float(speed))) * POLARITY[side]
-    mag = abs(s) * max(0.0, min(1.0, float(SPEED_LIMIT))) * max(0.0, min(2.0, float(TRIM[side])))
+    mag = abs(s) * SPEED_LIMIT * TRIM[side]
+    ena, in1, in2 = _pins_for(side)
 
+    # Stop case
     if mag < 1e-3:
-        ena, in1, in2 = _pins_for(side)
-        pi.hardware_PWM(ena, 0, 0); pi.write(in1, 0); pi.write(in2, 0)
+        pi.write(in1, 0)
+        pi.write(in2, 0)
+        pi.set_PWM_dutycycle(ena, 0)
         _cur[side]["dir"], _cur[side]["duty"] = 0, 0.0
         return _cur[side]
 
     direction = 1 if s > 0 else -1
+    pi.write(in1, 1 if direction > 0 else 0)
+    pi.write(in2, 0 if direction > 0 else 1)
+
     mag_boosted = pow(mag, GAMMA)
     target_duty = DUTY_MIN + (DUTY_MAX - DUTY_MIN) * min(1.0, mag_boosted)
+    duty8 = _duty_to_8bit(target_duty)
 
-    ena, in1, in2 = _pins_for(side)
-    if direction > 0: pi.write(in1, 1); pi.write(in2, 0)
-    else:             pi.write(in1, 0); pi.write(in2, 1)
-
+    # Kick if starting from rest
     was_stopped = (_cur[side]["duty"] <= 1e-6)
     if was_stopped:
-        kick = max(target_duty, START_KICK_DUTY)
-        pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(kick))
+        kick_duty8 = _duty_to_8bit(max(target_duty, START_KICK_DUTY))
+        pi.set_PWM_dutycycle(ena, kick_duty8)
         time.sleep(START_KICK_MS / 1000.0)
 
-    pi.hardware_PWM(ena, PWM_FREQ_HZ, _duty_to_hw(target_duty))
+    # Normal run
+    pi.set_PWM_dutycycle(ena, duty8)
     _cur[side]["dir"], _cur[side]["duty"] = direction, target_duty
     return _cur[side]
+
 
 def stop_all(brake=True):
     with _motor_lock:
         if brake:
-            pi.write(IN1_A,1); pi.write(IN2_A,1); pi.hardware_PWM(ENA_A,0,0)
-            pi.write(IN3_B,1); pi.write(IN4_B,1); pi.hardware_PWM(ENA_B,0,0)
+            pi.write(IN1_A, 1); pi.write(IN2_A, 1); pi.set_PWM_dutycycle(ENA_A, 0)
+            pi.write(IN3_B, 1); pi.write(IN4_B, 1); pi.set_PWM_dutycycle(ENA_B, 0)
             time.sleep(BRAKE_TIME)
         for ena, inA, inB in ((ENA_A, IN1_A, IN2_A), (ENA_B, IN3_B, IN4_B)):
-            pi.write(inA, 0); pi.write(inB, 0)
-            pi.hardware_PWM(ena, 0, 0)
-        _cur["L"] = {"dir":0, "duty":0.0}
-        _cur["R"] = {"dir":0, "duty":0.0}
+            pi.write(inA, 0)
+            pi.write(inB, 0)
+            pi.set_PWM_dutycycle(ena, 0)
+        _cur["L"] = {"dir": 0, "duty": 0.0}
+        _cur["R"] = {"dir": 0, "duty": 0.0}
+
 
 # ====== Socket.IO controls (NO WATCHDOG) ======
 _drive_lock = Lock()

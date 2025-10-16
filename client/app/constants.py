@@ -2,7 +2,7 @@
 Application constants.
 """
 
-MODEL = "no_aug_flip"
+MODEL = "new_new_only_aug3"  # YOLO model name (in models/{MODEL}.pt)
 
 # UI Constants
 LIVE_MAX_WIDTH = 640

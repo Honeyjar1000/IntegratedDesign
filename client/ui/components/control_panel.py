@@ -28,7 +28,7 @@ class ControlPanel:
         """Create instruction text."""
         tip = create_muted_label(
             self.container,
-            text="Click window to focus. Arrow keys drive. Space saves a photo."
+            text="Click window to focus. Arrow keys drive. Space saves photo. D detects objects."
         )
         tip.pack(pady=(0, 8))
     

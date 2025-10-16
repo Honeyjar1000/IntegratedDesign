@@ -7,10 +7,11 @@ from app.constants import STEP_DEG
 class InputHandler:
     """Handles keyboard input and converts to control commands."""
     
-    def __init__(self, drive_controller, servo_controller, photo_service, app_close_callback):
+    def __init__(self, drive_controller, servo_controller, photo_service, detection_service, app_close_callback):
         self.drive_controller = drive_controller
         self.servo_controller = servo_controller
         self.photo_service = photo_service
+        self.detection_service = detection_service
         self.app_close_callback = app_close_callback
         self.drive_pressed = set()
     
@@ -24,13 +25,13 @@ class InputHandler:
                 return
             self.drive_pressed.add(code)
             
-            if code == "Down":
+            if code == "Left":
                 self.drive_controller.drive(1, 1)
-            elif code == "Up":
-                self.drive_controller.drive(-1, -1)
-            elif code == "Left":
-                self.drive_controller.drive(-1, 1)
             elif code == "Right":
+                self.drive_controller.drive(-1, -1)
+            elif code == "Down":
+                self.drive_controller.drive(-1, 1)
+            elif code == "Up":
                 self.drive_controller.drive(1, -1)
             return
         
@@ -39,10 +40,15 @@ class InputHandler:
             self.photo_service.take_photo()
             return
         
+        # Detection trigger
+        if code in ("d", "D"):
+            self.detection_service.trigger_detection()
+            return
+        
         # Servo controls
-        if code in ("w", "W"):
+        if code in ("s", "S"):
             self.servo_controller.nudge_angle(-STEP_DEG)
-        elif code in ("s", "S"):
+        elif code in ("w", "W"):
             self.servo_controller.nudge_angle(STEP_DEG)
         elif code in ("q", "Q"):
             self.app_close_callback()
