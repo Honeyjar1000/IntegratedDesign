@@ -16,8 +16,8 @@ class DetectionService:
         self.photo_service = photo_service
         self.ui_update_callback = ui_update_callback
         
-        # Disable automatic detection
-        self.detector.enabled = False
+        # Keep automatic detection enabled (was disabled)
+        # self.detector.enabled = False
         
         # Current frame for detection
         self.current_frame = None
@@ -29,27 +29,19 @@ class DetectionService:
     def trigger_detection(self):
         """Manually trigger detection on current frame."""
         if self.current_frame is None:
-            print("❌ Detection triggered but no frame available!")
             return
         
-        print(f"✓ Detection triggered on frame {self.current_frame.shape}")
-        
-        # Run detection
+        # Run detection on original frame (same orientation as training data)
         try:
             results = self.detector.predict(self.current_frame)
-            print(f"✓ Detection results: {results}")
             if results is not None:
                 annotated = self.annotator.draw_detections(self.current_frame, results, self.detector.names)
-                print(f"✓ Annotated frame created: {annotated.shape}")
             else:
                 annotated = self.current_frame.copy()
-                print("⚠ No detection results, showing copy of frame")
         except Exception as e:
-            print(f"❌ Detection error: {e}")
             annotated = self.annotator.draw_error_message(self.current_frame, str(e))
         
         # Show annotated frame in second window
-        print("✓ Calling show_annotated_frame")
         self.ui_update_callback(0, lambda: self._show_annotated_frame(annotated))
         
         # Save the annotated image

@@ -53,8 +53,6 @@ class FrameProcessor:
                 
                 # Show raw frame in live panel
                 self.ui_update_callback(0, lambda: self._show_live_frame(frame))
-                
-                # NO automatic inference - only manual detection via 'd' key
 
         # Continue draining if more frames arrived
         if self._latest_jpg is not None:

@@ -1,7 +1,8 @@
 from pathlib import Path
 
 # ===================== CONFIG =====================
-PI_HOST    = "172.20.10.14"               # Pi IP/hostname - UPDATE THIS IF NEEDED
+#PI_HOST    = "172.20.10.14"               # Pi IP/hostname - UPDATE THIS IF NEEDED
+PI_HOST    = "172.20.10.4" 
 PORT       = 5000
 API_BASE   = f"http://{PI_HOST}:{PORT}"
 STREAM_URL = f"{API_BASE}/video_feed"

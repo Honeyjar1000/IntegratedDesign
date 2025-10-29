@@ -20,7 +20,7 @@ class ObjectDetector:
         self.enabled = False
         self.model = None
         self.names = {}
-        self.conf_threshold = 0.7
+        self.conf_threshold = 0.25  # Standard YOLO confidence threshold
         
         self._init_model()
     

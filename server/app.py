@@ -88,9 +88,9 @@ def stream_camera():
 
 # ================= Motors =================
 # Channel A (OUT1/OUT2)
-ENA_A, IN1_A, IN2_A = 12, 23, 24
+ENA_A, IN1_A, IN2_A = 12, 19, 26
 # Channel B (OUT3/OUT4)
-ENA_B, IN3_B, IN4_B = 13, 19, 26
+ENA_B, IN3_B, IN4_B = 13, 23, 24
 
 PWM_FREQ_HZ = 20000       # 20 kHz avoids audible whine
 

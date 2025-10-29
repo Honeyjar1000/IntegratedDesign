@@ -25,14 +25,14 @@ class InputHandler:
                 return
             self.drive_pressed.add(code)
             
-            if code == "Left":
+            if code == "Down":
                 self.drive_controller.drive(1, 1)
-            elif code == "Right":
-                self.drive_controller.drive(-1, -1)
-            elif code == "Down":
-                self.drive_controller.drive(-1, 1)
             elif code == "Up":
-                self.drive_controller.drive(1, -1)
+                self.drive_controller.drive(-1, -1)
+            elif code == "Left":
+                self.drive_controller.drive(-0.3, 0.3)  # Slower left turn
+            elif code == "Right":
+                self.drive_controller.drive(0.3, -0.3)  # Slower right turn
             return
         
         # Photo capture
